@@ -1,207 +1,197 @@
-# Editorial Vision Studio
 
-**語言：** 繁體中文 | [English](README.en.md)
+# 🎬 PlayTaiwan AI Vlog & NPC 智慧生成系統
 
-給 AI 圖像生成、視覺規劃與模型提示詞撰寫使用的編輯視覺導演引擎。
+本專案是一個基於 **FastAPI**、**Whisper (ASR)**、**Wav2Vec2 (SER)**、**Llama 3 (LLM)**、**Neo4j (RAG 圖形資料庫)**、**Edge-TTS** 與 **ComfyUI (RTX 5090 繪圖引擎)** 的智慧影音與 AI 明信片生成系統。專為觀光推廣與在地數位創新設計，能自動分析語音情緒與內容，結合圖形資料庫脈絡，產出帶有精美自動配音的高質感 Vlog 影片、NPC 互動語音以及展覽圖錄風格的 AI 明信片。
 
-Editorial Vision Studio 是一套給 AI 圖像與編輯設計使用的「視覺導演」工作流程。它不只是撰寫提示詞，而是先判斷用途、拆解畫面語言、選擇版面與風格，再輸出可執行的生成請求，讓圖片更接近雜誌、展覽海報、品牌主視覺或極簡插畫的質感。
+---
 
-## 風格範例
-
-以下八張成品全部出自 **[`ivory-postcard`](presets/ivory-postcard.md) preset**，示範如何把照片作為內容參考，重新轉譯成極簡明信片：米白紙底、大量留白、克制幾何、簡化筆觸與低飽和色盤。這不是照片濾鏡，而是重新選擇主體、刪減細節並重建構圖。
-
-這是**其中一種 preset，不是引擎預設值**。底色與呈現方式由 `ground` 與 `render_mode` 兩個必填欄位決定，沒有預設值可以掉進去。另外兩組隨附 preset：[`vintage-travel-poster`](presets/vintage-travel-poster.md)（飽和色場、平面色塊）與 [`papercraft-diorama-postcard`](presets/papercraft-diorama-postcard.md)（照片即底、紙雕立體模型）。完整清單見 [presets/registry.md](presets/registry.md)。
-
-<p>
-  <img src="assets/examples/pavilion-postcard.webp" alt="靜水亭台極簡明信片" width="48%">
-  <img src="assets/examples/quiet-seat-postcard.webp" alt="安靜長椅極簡明信片" width="48%">
-</p>
-<p>
-  <img src="assets/examples/mountain-dawn-postcard.webp" alt="黎明山稜極簡明信片" width="48%">
-  <img src="assets/examples/harbor-postcard.webp" alt="霧中港灣極簡明信片" width="48%">
-</p>
-<p>
-  <img src="assets/examples/autumn-walk-postcard.webp" alt="枝間秋光極簡明信片" width="48%">
-  <img src="assets/examples/osaka-castle-postcard.webp" alt="大阪城極簡明信片" width="48%">
-</p>
-<p>
-  <img src="assets/examples/mountain-valley-postcard.webp" alt="雲下山谷極簡明信片" width="48%">
-  <img src="assets/examples/tokyo-tower-postcard.webp" alt="暮色東京鐵塔極簡明信片" width="48%">
-</p>
-
-## 它能做什麼
-
-- **一開始就問你要什麼風格** —— 米色明信片、時代海報、紙雕明信片、自己描述，或讓 AI 提案。只問一次，選完整個 session 沿用。
-- 先判斷用途，例如展覽輸出、海報、活動主視覺、產品編輯圖、網站首圖、小誌或情緒看板。
-- 先決定視覺語言，再選風格，避免只靠「好看的風格詞」碰運氣。
-- 規劃版面、字體、色盤、抽象程度、材質權限與補救策略。
-- 透過轉接器轉成 GPT Image、Flux、Ideogram 或其他模型可用的提示詞。
-- 產圖前檢查衝突，例如 MUJI 卻使用過重標題、展覽圖塞太多文字、非小誌版面卻使用孔版印刷或影印質感。
-- 先提出二到三個互相競爭的視覺方向（各有主張與取捨），選定後才往下執行；備選方向保留下來，之後想換不必從頭跑。
-- 產圖後逐項評分（主體、構圖、視覺焦點、色盤、字體、材質、風格一致性、照片保真、用途契合、平台契合），只修分數最低的那一層，最多修三輪。
-- 記住一套視覺系統，讓第二張、第十張跟第一張是同一本刊物：鎖住風格、色盤、字體、材質層級，版面與構圖仍隨每張照片重新決定。
-- 一份視覺系統展開成一整組輸出：活動主視覺全尺寸、社群輪播、多頁簡報。
-- 簡化照片時保留空間關係：一個投影法、一個地平面、一個光源與接地投影，原本擠在一起的東西不會被拆成一排。
-
-## 快速提示詞
-
-跑這個 skill 時，第一步會先問你要什麼風格 —— 米色明信片、時代海報、紙雕明信片，或讓 AI 看過素材後提案。只問一次，選完整個 session 沿用。
-
-想直接指定、跳過選單：
+## 📂 專案結構
 
 ```text
-preset: ivory-postcard
+vlog_generator/
+├── vlog/
+│   ├── assets/             # 素材資料夾
+│   │   ├── images/         # 存放靜態觀光照片 (ZIP 壓縮檔上傳解析)
+│   │   ├── audio/          # 存放語音檔與 ASR 轉換音訊
+│   │   ├── bgm/            # 存放背景音樂 (mp3)
+│   │   └── dbs/            # (Git 略過) Neo4j 資料庫備份與檔案
+│   ├── output/             # 影片、語音與 AI 明信片輸出資料夾
+│   ├── core/               # 核心設定層
+│   │   └── config.py       # 全域路徑與常數設定
+│   ├── services/           # 業務邏輯層
+│   │   ├── asr_service.py  # 語音辨識服務
+│   │   ├── ser_service.py  # 語音情感分析服務
+│   │   ├── llm_service.py  # LLM 腳本與提示詞生成
+│   │   ├── tts_service.py  # 台灣腔高音質旁白生成
+│   │   ├── neo4j_service.py# Neo4j 知識圖譜 RAG 檢索
+│   │   ├── postcard_service.py # ComfyUI AI 明信片生成服務
+│   │   └── moviepy_service.py # FFmpeg 影片串接與字幕燒錄
+│   ├── api/                # 路由層
+│   │   └── routes.py       # FastAPI 端點 (/visitor/create_vlog, /postcard/create_ai 等)
+│   └── main.py             # 程式進入點 (啟動 FastAPI 伺服器)
+├── requirements.txt        # 依賴套件清單
+└── .gitignore              # Git 忽略清單 (自動排除 .venv、output 等)
+
 ```
 
-不透過引擎、直接貼給模型的話用這段。它就是 `ivory-postcard` 的 compiler anchor，唯一真實來源是 [presets/ivory-postcard.md](presets/ivory-postcard.md)；兩邊若有出入，以 preset 為準。
+---
 
-```text
-在暖象牙白紙底上建立極簡編輯插畫，紙面平整均勻，無顆粒無汙漬。
-用三到五「種」簡化形體重新構成場景，同一種可依畫面需要重複出現；保留原照片的相對關係——本來聚在一起的仍然聚在一起，遮擋關係與大小比例都要留住。
-所有物件維持同一個平視立面投影，單一物件內不得出現兩個角度。
-所有物件站在同一條地平面上；光源固定來自左上方，每個物件都要有一道平塗的接觸陰影，比底色深一到兩階，不要純黑。
-構圖：主體縮小並置於上方中央，至少保留百分之五十五安靜的空白。
-筆觸：不透明、近似顏料的色塊，邊緣帶輕微不規則的手繪感，形狀內部可有淡淡的色調變化；重複出現的元素彼此略有差異；不要向量般乾淨的外框，不要任何攝影表面細節。
-色盤：暖象牙白、炭褐色、一種低飽和大地色、一種冷中性色，最多再加一個小面積的低飽和色彩焦點——不要高飽和色塊。
-文字：可省略；若保留，僅在下方邊界放上一行小型細襯線標題「[標題]」。
-避免：寫實攝影、半透明疊影、深透視縱深與匯聚的消失點、沒有接觸陰影而漂浮的物件、原本成群卻被排成一列的物件、電線、密集窗格、亮面漸層、霓虹色、雜誌封面版式、浮水印、額外文字。
+## ⚙️ 快速安裝與環境建置
+
+### 1. 建立並啟動虛擬環境 (推薦使用 `uv`)
+
+#### **Windows（PowerShell）**
+
+```powershell
+cd vlog_generator/vlog
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
 ```
 
-### 照片參考的風格鎖定
-
-如果提供照片後，結果仍出現淡化照片感或保留太多細節，請將照片指定為「內容參考」，而非必須保留的原圖，並明確加入以下規則：
-
-```text
-這張照片僅作為內容參考。不要保留它的攝影細節、光線、透視或材質。
-只挑選場景中最具辨識度的線索，重新繪製為彼此獨立、扁平的編輯插畫筆觸。
-不要做成雜誌封面。除非特別要求，否則不要加入外框、條碼、封面小標或大標題。
-```
-
-## 建議流程
-
-1. 先定義用途。
-
-   例如：展覽圖、編輯海報、品牌主視覺、網站首圖或社群圖片。
-
-2. 選風格。
-
-   跑起來的第一個問題。從隨附的 preset 挑一個、自己描述想要的樣子，或讓 AI 看過素材後提案。只問這一次。
-
-3. 選擇視覺語言。
-
-   例如：博物館感、建築感、產品靜物感、安靜人物感、都市紀實感。
-
-4. 選定藝術方向。
-
-   上一步選了 preset 或自己描述過，這步就自動定案、不再問。選「讓 AI 提案」才會看到二到三個方向。
-
-5. 在選定的方向裡決定版面與構圖。
-
-   例如：展覽圖加 MUJI、瑞士風海報加建築感、雜誌封面加 Kinfolk。
-
-6. 轉成模型提示詞。
-
-   使用 `adapters/` 裡的規則，將同一份視覺計畫轉成 GPT Image、Flux、Ideogram 或通用工具可用的提示詞。
-
-7. 產圖前檢查。
-
-   確認底色、呈現方式、字體、材質、色盤、版面沒有互相衝突。
-
-8. 產圖後評分並修正。
-
-   找出分數最低的那一項，只修對應的那一層，重新編譯後再產一次。
-
-9. 需要成套時鎖住視覺系統。
-
-   第一張通過後把風格、色盤、字體、材質層級鎖起來，後續每一張都繼承。
-
-## 提示詞範例
-
-### 極簡城市編輯插畫
-
-```text
-一張一比一的直式極簡城市編輯插畫，紙底為溫暖象牙白。
-以扁平矩形色塊和一座具辨識度的中央拱形建築，構成暮色中的簡化城市天際線。
-畫面底部以極小人物剪影形成安靜節奏。
-使用低飽和海軍藍、霧紫色、珊瑚色與赭黃色。
-中央下方放上一行小型襯線字標題：「暮色城市」。
-避免寫實攝影、複雜透視、密集窗格、亮面效果與浮水印。
-```
-
-### 安靜建築海報
-
-```text
-一張三比四直式極簡建築編輯海報。
-在象牙白背景中央，以層疊的淡灰色量體構成一座高聳抽象塔樓。
-用幾條極細引導線指向塔樓基座。
-在塔樓左下附近加入一個小型墨綠色焦點。
-下方放上一行精緻襯線字標題：「垂直晨光」。
-避免真實玻璃材質、戲劇性天空、人群、濃重陰影、雜訊質感與浮水印。
-```
-
-### 博物館感橋樑習作
-
-```text
-一張四比三橫式展覽圖插畫。
-一座跨越安靜水面的長橋，化約為柔灰線條、暖赭色橋拱和一個小型亭子剪影。
-橋面上方保留大面積未繪製的象牙白空間。
-下方以鬆散、受控制且稀疏的水平筆觸表示水面。
-在下方邊界放上一行優雅襯線字：「橋拱留住光」。
-避免寫實感、粗重外框、高飽和藍色、裝飾圖樣與浮水印。
-```
-
-### 東京鐵塔重新構圖
-
-```text
-一張三比四直式極簡編輯展覽插畫，不要做成照片轉插畫。
-東京鐵塔街景照片僅作為內容參考。只使用四個象徵元素重新構圖：一座低飽和磚紅色鐵塔輪廓、三棵炭褐色冬季樹幹、少量柔灰色建築量體，以及小型鼠尾草綠街燈焦點。
-使用不透明、扁平、近似水粉顏料的色塊，背景為象牙白紙底。主視覺置於畫面上方中央，至少保留百分之五十五空白。下方邊界放上一行小型襯線字：「暮色鐵塔」。
-避免電線、真實的鐵塔格狀結構、玻璃反射、密集窗格、細緻陰影、攝影材質、半透明疊影、外框、雜誌封面字體、浮水印。
-```
-
-## 專案結構
-
-```text
-.
-├── SKILL.md                 # Codex 技能入口
-├── presets/                 # 隨附的固定模板：米色明信片、時代海報、紙雕立體明信片
-├── prompts/                 # 意圖、風格閘口、風格描述、分析器、藝術方向、規劃器、編譯器、檢查器、評估器、迭代、視覺記憶、成套規劃
-├── styles/                  # 風格特徵：Swiss、MUJI、Kinfolk、Monocle、COS 等
-├── layouts/                 # 海報、小誌、展覽圖、首圖、活動等輸出格式
-├── adapters/                # 不同模型使用的提示詞轉接器
-├── recovery/                # 對比、主體、色盤、幾何等補救策略
-├── assets/                  # 底色與呈現方式、空間建構、色盤、字體、材質規則與範例
-├── reference/               # 架構與決策樹
-└── spec/                    # EditorialSpec、VisualManifest、VisualMemory schema
-```
-
-## 安裝成 Codex 技能
-
-將這個 repo 複製或 symlink 到你的 Codex skills 目錄：
+#### **macOS / Linux**
 
 ```bash
-mkdir -p ~/.codex/skills
-cp -R editorial-vision-studio ~/.codex/skills/editorial-vision-studio
+cd vlog_generator/vlog
+python3 -m venv .venv
+source .venv/bin/activate
+
 ```
 
-接著可以這樣請 Codex 使用：
+### 2. 安裝依賴套件
+
+透過高效能的 `uv` 或 `pip` 安裝所有必要套件：
+
+```bash
+uv pip install -r ../requirements.txt
+# 或使用標準 pip
+pip install -r ../requirements.txt
+
+```
+
+---
+
+## 🚀 系統啟動方式 (雙軌並行架構)
+
+本系統結合了 **ComfyUI 繪圖引擎 (Port 8188)** 與 **FastAPI 後端引擎 (Port 2026)**，請依序啟動以下服務：
+
+### 步驟一：啟動 ComfyUI 繪圖引擎 (指定顯卡與外部監聽)
+
+請切換至 ComfyUI 資料夾、啟動對應虛擬環境（並確保安裝好 `sqlalchemy` 等相依套件），再指定 GPU 與 Port 8188 啟動：
+
+```bash
+cd ~/playtaiwan/ComfyUI
+source .venv/bin/activate
+# 若尚未安裝相依套件，請先執行：pip install -r requirements.txt
+$env:CUDA_VISIBLE_DEVICES="0"; python main.py --listen 0.0.0.0 --port 8188
+
+```
+
+### 步驟二：啟動 FastAPI 主程式服務
+
+開啟另一個終端機視窗，啟動你的 Vlog 引擎主後端（運行於 Port 2026）：
+
+```bash
+cd ~/playtaiwan/vlog_generator/vlog
+uv run python main.py
+
+```
+
+服務啟動後，你可以前往 **Swagger API 互動文件** 進行測試：
+👉 `http://localhost:2026/api/docs`
+
+---
+
+## 📡 主要 API 功能與測試範例
+
+### 1. 🎨 AI 展覽圖錄風格明信片與導覽文字 (`POST /api/postcard/create_ai`)
+
+結合 Neo4j 知識圖譜、Llama 在地短文生成與 RTX 5090 繪圖引擎，產出高質感彩色水粉插畫明信片。
+
+### 2. 🎬 遊客端 Vlog 核心生成 (`POST /api/visitor/create_vlog`)
+
+上傳語音檔、照片壓縮檔（ZIP）、BGM 與景點清單，自動產出帶有字幕的精美 Vlog 影片。
+
+**API 測試範例指令 (cURL)：**
+
+```bash
+curl -X POST "http://localhost:2026/api/visitor/create_vlog" \
+  -H "accept: application/json" \
+  -F "user_audio=@assets/audio/3.AI不是口號.m4a" \
+  -F "spot_list=[\"南投環湖茶園\", \"竹林秘境\"]" \
+  -F "image_zip=@assets/images/images.zip" \
+  -F "bgm_file=@assets/bgm/ikoliks_aj-background-music-320427.mp3"
+
+```
+
+### 3. 🗣️ NPC 專屬配音 API (`POST /api/npc/speak`)
+
+輸入文字，動態生成活潑可愛的 NPC 專屬配音（mp3）。
+
+### 4. 🔍 任務狀態與下載端點
+
+* **`GET /api/check_status/{task_id}`**：查詢背景非同步影音任務進度。
+* **`GET /api/download/{filename}`**：下載產出的影片、語音或明信片檔案。
+
+---
+
+## 🛑 開發注意事項 (.gitignore 規範)
+
+為了避免上傳過大的檔案或破壞版控，以下項目已被 `.gitignore` 自動忽略：
+
+* `.venv/` （虛擬環境）
+* `output/` （生成的影音與圖片檔案）
+* `assets/dbs/*.dump` （超過 100MB 的 Neo4j 資料庫備份）
+* `__pycache__/` 與系統暫存檔
+
+## 🙀服務站用
+當 Port 8188（通常是你的 ComfyUI 繪圖引擎）被佔用時，通常是因為之前啟動的 Python 行程沒有被正確關閉，仍在背景默默運作。
+
+你可以透過以下步驟找出並終止佔用該 Port 的行程：
+
+### 步驟一：找出是哪個行程佔用了 Port 8188
+
+在終端機輸入以下指令：
+
+```bash
+sudo lsof -i :8188
+
+```
+
+*(如果系統提示 `lsof: command not found`，可以改用 `sudo ss -lptn 'sport = :8188'`)*
+
+執行後，你會看到類似下面的輸出：
 
 ```text
-使用 editorial-vision-studio，將這張照片重新構圖為極簡展覽插畫提示詞；不要保留寫實攝影細節。
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+python3  12345 jackstar    3u  IPv4  ...      0t0 TCP *:8188 (LISTEN)
+
 ```
 
-## 設計備註
+注意看 **`PID`**（例如上面的 `12345`）。
 
-- 這套系統刻意保持模型無關。先保留視覺邏輯，再用轉接器轉成不同模型語法。
-- 材質由版面決定。孔版印刷、網點、影印與掃描雜訊適合小誌，不適合乾淨的展覽圖或產品版面。
-- 補救策略要精準。只有在分析指出問題時，才修正對比、焦點、幾何、色盤或背景。
-- 圖中文字必須短，並明確指定位置。
+---
 
-## License
+### 步驟二：強制終止該行程
 
-MIT
+拿到 PID 之後，使用 `kill` 指令將它關閉：
 
-## 作者
+```bash
+sudo kill -9 12345
 
-Max Wang  
-GitHub: <https://github.com/Yu-0312>
+```
+
+*(請將 `12345` 換成你畫面中實際看到的數字)*
+
+---
+
+### 步驟三：重新啟動服務
+
+行程被殺掉後，Port 就釋放了。這時你就可以再次順利啟動你的 ComfyUI：
+
+```bash
+cd ~/playtaiwan/ComfyUI
+source .venv/bin/activate
+$env:CUDA_VISIBLE_DEVICES="0"; python main.py --listen 0.0.0.0 --port 8188
+
+```
