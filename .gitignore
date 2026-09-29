@@ -1,0 +1,43 @@
+# Python environments
+.venv/
+venv/
+env/
+ENV/
+*/venv/
+*/.venv/
+
+# Python libraries / generated environments
+**/lib/
+**/lib64/
+**/include/
+**/share/
+**/pyvenv.cfg
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.so
+*$py.class
+
+# Tool cache
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.tox/
+
+# Generated project data
+vlog_generator/vlog/output/
+vlog_generator/vlog/assets/
+**/bin/
+
+# Database generated data
+dbs/*.dump
+dbs/*.cypher
+dbs/temp/
+neo4j_data/
+
+# Local ComfyUI installation
+ComfyUI/
+
+# Editorial Vision Studio
+editorial-vision-studio/

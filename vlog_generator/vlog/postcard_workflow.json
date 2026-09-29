@@ -1,0 +1,25 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 651920947181461, "steps": 30, "cfg": 7.5, "sampler_name": "euler_ancestral",
+      "scheduler": "normal", "denoise": 1.0,
+      "model": ["4", 0], 
+      "positive": ["13", 0], 
+      "negative": ["7", 0], 
+      "latent_image": ["14", 0]
+    },
+    "class_type": "KSampler"
+  },
+  "4": { "inputs": { "ckpt_name": "counterfeitV25_v25.safetensors" }, "class_type": "CheckpointLoaderSimple" },
+  "6": { "inputs": { "text": "REPLACE_ME_BY_PYTHON", "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+  "7": { "inputs": { "text": "REPLACE_ME_BY_PYTHON", "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+  "10": { "inputs": { "image": "REPLACE_ME_BY_PYTHON" }, "class_type": "LoadImage" },
+  "12": { "inputs": { "control_net_name": "control_v11p_sd15_lineart.pth" }, "class_type": "ControlNetLoader" },
+  "13": {
+    "inputs": { "strength": 0.7, "conditioning": ["6", 0], "control_net": ["12", 0], "image": ["10", 0] },
+    "class_type": "ControlNetApply"
+  },
+  "14": { "inputs": { "width": 512, "height": 512, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
+  "15": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
+  "9": { "inputs": { "images": ["15", 0], "filename_prefix": "ComfyUI" }, "class_type": "SaveImage" }
+}
