@@ -144,7 +144,7 @@ curl -X POST "http://localhost:2026/api/visitor/create_vlog" \
 * `assets/dbs/*.dump` （超過 100MB 的 Neo4j 資料庫備份）
 * `__pycache__/` 與系統暫存檔
 
-## 🙀服務站用
+## 🙀服務佔用
 當 Port 8188（通常是你的 ComfyUI 繪圖引擎）被佔用時，通常是因為之前啟動的 Python 行程沒有被正確關閉，仍在背景默默運作。
 
 你可以透過以下步驟找出並終止佔用該 Port 的行程：
