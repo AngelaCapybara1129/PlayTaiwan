@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import json
@@ -11,7 +12,8 @@ from pydantic import ValidationError
 from api.schemas import (
     DialogueInput, DialogueOutput,
     OvernightTransitionInput, OvernightTransitionOutput,
-    NarrationInput, NarrationOutputNode
+    NarrationInput, NarrationOutputNode,
+    StoryTaskResponse
 )
 from transformers import pipeline
 from core.config import TEMPLATES
@@ -35,8 +37,73 @@ class _LockedLLM:
         with _gen_lock:
             t0 = time.time()
             out = self._pipe(*args, **kwargs)
-            print(f"⏱️ LLM 生成耗時 {time.time() - t0:.1f}s")
+            dt = time.time() - t0
+            try:
+                text = out[0]["generated_text"][-1]["content"]
+                n = len(self._pipe.tokenizer(text).input_ids)
+                print(f"⏱️ LLM 生成耗時 {dt:.1f}s，約 {n} tokens，{n / max(dt, 0.001):.1f} tok/s")
+            except Exception:
+                print(f"⏱️ LLM 生成耗時 {dt:.1f}s")
             return out
+
+
+# 可用環境變數調整：
+#   LLM_MODEL = 模型名稱 (例如 Qwen/Qwen2.5-7B-Instruct)
+#   LLM_QUANT = auto (預設，VRAM 小於 20GB 時自動用 4bit) / 4bit / none
+LLM_MODEL = os.environ.get("LLM_MODEL", "NousResearch/Meta-Llama-3-8B-Instruct")
+LLM_QUANT = os.environ.get("LLM_QUANT", "auto").lower()
+
+
+def _should_quantize() -> bool:
+    if LLM_QUANT == "4bit":
+        return True
+    if LLM_QUANT == "none":
+        return False
+    if not torch.cuda.is_available():
+        return False
+    total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    return total_gb < 20
+
+
+def _build_pipeline(use_4bit: bool):
+    if use_4bit:
+        from transformers import BitsAndBytesConfig
+        bnb = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
+        return pipeline(
+            "text-generation",
+            model=LLM_MODEL,
+            model_kwargs={"quantization_config": bnb},
+            device_map="auto",
+        )
+    # 舊版 transformers 不認得 dtype 時，改回 model_kwargs={"torch_dtype": torch.bfloat16}
+    return pipeline(
+        "text-generation",
+        model=LLM_MODEL,
+        dtype=torch.bfloat16,
+        device_map="auto",
+    )
+
+
+def _report_device(pipe):
+    """印出模型實際放在哪裡，方便發現被丟到 CPU 的情況"""
+    print(f"✅ LLM 已載入，裝置: {pipe.model.device}")
+    dm = getattr(pipe.model, "hf_device_map", None)
+    if dm:
+        places = set(str(v) for v in dm.values())
+        print(f"   device_map 使用位置: {places}")
+        if any(p in ("cpu", "disk") for p in places):
+            print("   ⚠️ 警告：部分模型層被放在 CPU/磁碟，生成會非常慢！"
+                  "請關閉其他佔用 VRAM 的程式，或設定 LLM_QUANT=4bit。")
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(0)
+        print(f"   GPU: {props.name}，總 VRAM {props.total_memory / 1e9:.1f}GB，"
+              f"本程序已用 {torch.cuda.memory_allocated() / 1e9:.1f}GB")
+    else:
+        print("   ⚠️ 警告：torch 偵測不到 CUDA，模型會跑在 CPU 上！")
 
 
 def _get_llm():
@@ -44,14 +111,17 @@ def _get_llm():
     if _llm_wrapper is None:
         with _load_lock:
             if _llm_wrapper is None:
-                print("🚀 正在載入 LLM 大腦 (Llama-3-8B-Instruct)...")
-                _llm_pipeline = pipeline(
-                    "text-generation",
-                    model="NousResearch/Meta-Llama-3-8B-Instruct",
-                    dtype=torch.bfloat16,  # 舊版 transformers 不認得 dtype 時，改回 model_kwargs={"torch_dtype": torch.bfloat16}
-                    device_map="auto",
-                )
-                print(f"✅ LLM 已載入，裝置: {_llm_pipeline.model.device}")
+                use_4bit = _should_quantize()
+                print(f"🚀 正在載入 LLM 大腦 ({LLM_MODEL}，{'4bit 量化' if use_4bit else 'bfloat16'})...")
+                try:
+                    _llm_pipeline = _build_pipeline(use_4bit)
+                except Exception as e:
+                    if use_4bit:
+                        print(f"⚠️ 4bit 載入失敗 ({e})，改用 bfloat16 重試 (需先安裝 bitsandbytes)")
+                        _llm_pipeline = _build_pipeline(False)
+                    else:
+                        raise
+                _report_device(_llm_pipeline)
                 _llm_wrapper = _LockedLLM(_llm_pipeline)
     return _llm_wrapper
 
@@ -339,6 +409,7 @@ def generate_script_blueprint(
 【絕對最高指令】：
 1. 本次生成的所有欄位內容（包含標題、前言、大綱、角色介紹、任務說明、NPC開場白、過關對話等）**必須 100% 使用純正的繁體中文 (zh-TW) 撰寫**。
 2. **絕對嚴禁出現任何英文字母、英文單字或英文句子**（唯獨 node 裡的 spot_uuid 必須原封不動填入對應站點提供的 UUID 字串）。
+3. 請嚴格控制字數：preface 約 80 字、synopsis 約 100 字、npc.intro 約 60 字；每一站的 task_description 約 80 字、opening 約 60 字、success 約 30 字，不要超出。
 
 【任務目標】：請根據以下目標地區與真實地點，自行發揮創意構思一個引人入勝的解謎冒險主題，並為這 **{node_count} 個地點** 創作一篇情節豐富、細節飽滿的長篇解謎劇本（{mode_title}）。
 - 目標地區：{city_name} {town_name}
@@ -374,7 +445,7 @@ def generate_script_blueprint(
       "task_type": "3. 採訪蒐證型",
       "task_description": "融合地點歷史與解謎線索的深度任務說明...",
       "dialogues": {{
-        "opening": "長篇且充滿懸疑感的開場對白...",
+        "opening": "充滿懸疑感的開場對白（約 60 字）...",
         "success": "過關時的讚許..."
       }}
     }}
@@ -387,8 +458,8 @@ def generate_script_blueprint(
     ]
 
     max_retries = 2
-    # 依站點數動態給足 token，避免 JSON 被截斷後一直重試
-    max_tokens = max(2500, 800 * node_count)
+    # 已在 prompt 限制字數，依站點數給足 token 即可 (4 站約 2400)
+    max_tokens = max(2000, 600 * node_count)
 
     for attempt in range(max_retries):
         response = ""
@@ -586,3 +657,146 @@ def parse_script_request_agent(user_input: str) -> dict:
             "node_count": 4,
             "is_night": False
         }
+
+
+# ============================================================
+# 5. 批次劇本任務生成 (Story & Task Batch Generation)
+# ============================================================
+
+# ---------- 欄位名稱正規化 (LLM 常亂取 key 名) ----------
+_SEAT_KEYS = ("seat_no", "party_member", "clue_target", "seat", "player", "player_no", "member")
+_TEXT_KEYS = ("clue_text", "clue", "text", "content", "hint")
+
+
+def _pick(d: dict, keys, default=None):
+    for k in keys:
+        if d.get(k) not in (None, ""):
+            return d[k]
+    return default
+
+
+def _normalize_clue(c, index: int) -> dict:
+    """統一 LLM 亂飄的 key；座位號缺失時用順序補上"""
+    if isinstance(c, str):
+        return {"seat_no": index, "clue_text": c}
+    if not isinstance(c, dict):
+        return {"seat_no": index, "clue_text": str(c)}
+    try:
+        seat = int(_pick(c, _SEAT_KEYS, default=index))
+    except (TypeError, ValueError):
+        seat = index
+    return {"seat_no": seat, "clue_text": str(_pick(c, _TEXT_KEYS, default=""))}
+
+
+def _normalize_story_result(result: dict) -> dict:
+    for story in result.get("stories", []):
+        for node in story.get("nodes", []):
+            for task in node.get("tasks", []):
+                clues = task.get("task_clue")
+                if isinstance(clues, (dict, str)):
+                    clues = [clues]
+                if clues:
+                    task["task_clue"] = [
+                        _normalize_clue(c, i) for i, c in enumerate(clues, start=1)
+                    ]
+    return result
+
+
+def generate_batch_story_tasks(req_dict: dict) -> dict:
+    llm = _get_llm()
+    party_size = req_dict.get("party_size", 2)
+
+    system_prompt = f"""你是一個頂尖的實境遊戲劇本與任務設計大師。
+【絕對最高指令】：
+1. 必須 100% 使用純正的繁體中文 (zh-TW) 生成所有劇情、標題、任務與提示。
+2. 絕對禁止夾雜英文單字或簡體字（除 place_id 須原封不動帶回外）。
+3. 嚴格遵守 Request 提供的 JSON 結構與各份劇本的指定景點 (places) 與敘事語氣 (nt_name)。
+4. 協作解謎型 (type_id=5) 必須提供 task_clue 陣列，筆數等於 party_size（{party_size}），每位玩家看到的線索不同。
+   task_clue 每個元素「只能」有兩個欄位：seat_no（整數，從 1 開始）與 clue_text（字串），不可使用其他欄位名稱。
+5. 選擇題型 (6/7) 必須提供 4 個選項 (A-D) 且恰好一個 is_correct=1。
+6. 只回傳合法的純 JSON，絕對不要包含任何 Markdown 標記（如 ```json）或說明文字。
+"""
+
+    # 注意：這是 f-string，JSON 的大括號要寫成 {{ }}
+    user_prompt = f"""請根據以下生成條件，批次產生對應的劇本與關卡節點任務：
+{json.dumps(req_dict, ensure_ascii=False, indent=2)}
+
+請嚴格依照以下 JSON 結構完整回傳（tasks 內的兩種範例分別對應「選擇題型」與「協作解謎型」，請依各站指定的 task_type 擇一使用對應格式）：
+{{
+    "stories": [
+        {{
+            "story_no": 1,
+            "story": {{
+                "story_title": "...",
+                "story_prologue": "...",
+                "story_synopsis": "...",
+                "story_badge": ["..."]
+            }},
+            "nodes": [
+                {{
+                    "place_id": "...",
+                    "sn_order": 1,
+                    "sn_title": "...",
+                    "location_codename": "...",
+                    "sn_opening_text": "...",
+                    "sn_success_text": "...",
+                    "tasks": [
+                        {{
+                            "task_type": 6,
+                            "task_describe": "...",
+                            "task_hint": "...",
+                            "correct_answer": null,
+                            "task_option": [
+                                {{ "option_key": "A", "option_context": "...", "is_correct": 1 }},
+                                {{ "option_key": "B", "option_context": "...", "is_correct": 0 }},
+                                {{ "option_key": "C", "option_context": "...", "is_correct": 0 }},
+                                {{ "option_key": "D", "option_context": "...", "is_correct": 0 }}
+                            ]
+                        }},
+                        {{
+                            "task_type": 5,
+                            "task_describe": "...",
+                            "task_hint": "...",
+                            "correct_answer": "...",
+                            "task_clue": [
+                                {{ "seat_no": 1, "clue_text": "玩家 1 看到的線索..." }},
+                                {{ "seat_no": 2, "clue_text": "玩家 2 看到的線索..." }}
+                            ]
+                        }}
+                    ]
+                }}
+            ]
+        }}
+    ]
+}}
+"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    max_retries = 2
+    last_error = None
+    for attempt in range(max_retries):
+        response_text = ""
+        try:
+            # 批次生成需要較大 token 空間
+            outputs = llm(messages, max_new_tokens=4000, temperature=0.7, do_sample=True)
+            response_text = outputs[0]["generated_text"][-1]["content"]
+
+            start, end = response_text.find("{"), response_text.rfind("}") + 1
+            if start == -1 or end == 0:
+                raise ValueError("回應中找不到 JSON")
+
+            raw = json.loads(response_text[start:end])
+            raw = _normalize_story_result(raw)
+            # 在這裡就驗證：失敗會進 except 並重試，而不是等到回應階段才 500
+            return StoryTaskResponse.model_validate(raw).model_dump()
+        except Exception as e:
+            last_error = e
+            print(f"⚠️ 批次劇本任務生成失敗，重試中 ({attempt+1}/{max_retries}): {e}")
+            print(f"   原始輸出後 300 字: ...{response_text[-300:]}")
+
+    # 不要再回傳 {"stories": []}：空結果會被前端當成成功
+    raise RuntimeError(f"批次劇本任務生成失敗（已重試 {max_retries} 次）: {last_error}")

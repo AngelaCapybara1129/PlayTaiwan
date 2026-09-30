@@ -9,6 +9,7 @@ import time
 import threading
 
 from typing import Optional, Dict, Any
+from api.schemas import StoryTaskRequest, StoryTaskResponse
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException, Request, Body
 from fastapi.responses import FileResponse, JSONResponse
@@ -21,7 +22,7 @@ from core.config import (
 )
 
 from services.asr_service import transcribe_audio
-from services.llm_service import generate_vlog_content_with_template, parse_user_intent_agent, tool_call_create_calendar_event, generate_single_spot_puzzle, parse_script_request_agent
+from services.llm_service import generate_vlog_content_with_template, parse_user_intent_agent, tool_call_create_calendar_event, generate_single_spot_puzzle, parse_script_request_agent, generate_batch_story_tasks
 from services.tts_service import generate_tts
 from services.moviepy_service import process_vlog_task
 from services.ser_service import analyze_emotion
@@ -528,3 +529,17 @@ def api_get_blueprint_job(job_id: str):
         return JSONResponse(status_code=404, content={"status": "not_found", "job_id": job_id})
     job.pop("updated_at", None)
     return {"job_id": job_id, **job}
+
+# ============================================================
+# 劇本任務生成 API (批次生成多份劇本與節點任務)
+# 欄位正規化與驗證已移到 services/llm_service.py 的 generate_batch_story_tasks
+# ============================================================
+@router.post("/stories/tasks/batch", response_model=StoryTaskResponse)
+def create_batch_story_tasks(payload: StoryTaskRequest):
+    """
+    後端一次送出多份劇本生成條件，AI SERVICE 依序生成後一次回傳。
+    """
+    try:
+        return generate_batch_story_tasks(payload.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"劇本任務生成失敗: {str(e)}")

@@ -125,3 +125,70 @@ class NarrationOutputNode(BaseModel):
     day_index: int
     node_id: str
     narration_text: str
+
+# ==========================================
+# 劇本任務批次生成 Schemas
+# ==========================================
+class TaskTypeItem(BaseModel):
+    type_id: int
+    type_name: str
+
+class PlaceItem(BaseModel):
+    place_id: str
+    p_name: str
+    is_hotel: int
+    is_hidden: int
+    type_list: List[TaskTypeItem]
+
+class StoryCondition(BaseModel):
+    story_no: int
+    nt_name: str
+    places: List[PlaceItem]
+
+class StoryTaskRequest(BaseModel):
+    city_name: str
+    district_name: str
+    party_size: int
+    s_tag: List[str]
+    is_night_mode: int
+    stories: List[StoryCondition]
+
+class TaskOption(BaseModel):
+    option_key: str
+    option_context: str
+    is_correct: int
+
+class TaskClue(BaseModel):
+    seat_no: int
+    clue_text: str
+
+class GeneratedTask(BaseModel):
+    task_type: int
+    task_describe: str
+    task_hint: str
+    correct_answer: Optional[str] = None
+    task_option: Optional[List[TaskOption]] = None
+    task_clue: Optional[List[TaskClue]] = None
+
+class GeneratedNode(BaseModel):
+    place_id: str
+    sn_order: int
+    sn_title: str
+    location_codename: str
+    sn_opening_text: str
+    sn_success_text: str
+    tasks: List[GeneratedTask]
+
+class StoryDetail(BaseModel):
+    story_title: str
+    story_prologue: str
+    story_synopsis: str
+    story_badge: List[str]
+
+class GeneratedStoryItem(BaseModel):
+    story_no: int
+    story: StoryDetail
+    nodes: List[GeneratedNode]
+
+class StoryTaskResponse(BaseModel):
+    stories: List[GeneratedStoryItem]

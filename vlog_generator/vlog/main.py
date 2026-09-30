@@ -11,28 +11,40 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from api.routes import router as vlog_router
+from core.config import COMFY_DIR, COMFY_DIR_CANDIDATES, COMFY_URL
 from services.llm_service import preload_llm
 
-COMFY_URL = "http://127.0.0.1:8188"
 
-# ComfyUI 資料夾：優先使用環境變數 COMFY_DIR，其次依序嘗試下列路徑
-COMFY_DIR_CANDIDATES = [
-    os.environ.get("COMFY_DIR", ""),
-    r"D:\playtaiwan\ComfyUI",
-    "/home/jackstar/playtaiwan/ComfyUI",
-]
+def _check_gpu():
+    """啟動時檢查 GPU / PyTorch 是否相容，及早發現 sm_120 (RTX 50 系列) 不支援的問題"""
+    try:
+        import torch
+    except Exception as e:
+        print(f"❌ 無法匯入 torch: {e}")
+        return
 
+    if not torch.cuda.is_available():
+        print("❌ [GPU] CUDA 不可用")
+        return
 
-def _find_comfy_dir():
-    for d in COMFY_DIR_CANDIDATES:
-        if d and os.path.isdir(d):
-            return Path(d)
-    return None
+    major, minor = torch.cuda.get_device_capability(0)
+    arch = f"sm_{major}{minor}"
+    supported = torch.cuda.get_arch_list()
+    print(f"🖥️ [GPU] {torch.cuda.get_device_name(0)} ({arch}), torch {torch.__version__}")
+    if arch not in supported:
+        print(f"❌ [GPU] 目前 PyTorch 不支援 {arch}，請升級到 cu128 以上。")
+        print(f"   支援清單: {supported}")
+        print(f"   Python: {sys.executable}")
 
 
 def _find_comfy_python(comfy_dir: Path) -> str:
     """優先使用 ComfyUI 自己的虛擬環境，找不到就用目前的 Python"""
-    for rel in (".venv/Scripts/python.exe", ".venv/bin/python", "venv/Scripts/python.exe", "venv/bin/python"):
+    for rel in (
+        ".venv/Scripts/python.exe",
+        ".venv/bin/python",
+        "venv/Scripts/python.exe",
+        "venv/bin/python",
+    ):
         p = comfy_dir / rel
         if p.exists():
             return str(p)
@@ -50,35 +62,46 @@ def _start_comfy_if_needed():
         pass  # 連線失敗、逾時等，都視為尚未啟動
 
     print("⚠️ [ComfyUI] 尚未啟動，正在嘗試自動啟動 ComfyUI (Port 8188)...")
-    comfy_dir = _find_comfy_dir()
-    if not comfy_dir:
-        print(f"❌ 找不到 ComfyUI 資料夾，已嘗試: {[d for d in COMFY_DIR_CANDIDATES if d]}")
+    if not COMFY_DIR:
+        print(f"❌ 找不到 ComfyUI 資料夾，已嘗試: {COMFY_DIR_CANDIDATES}")
         print("   可設定環境變數 COMFY_DIR 指向 ComfyUI 資料夾。")
         return
 
     try:
+        # 把輸出寫進 log 檔，ComfyUI 啟動失敗時才看得到原因
+        log_path = COMFY_DIR / "comfy_autostart.log"
+        log_file = open(log_path, "a", encoding="utf-8")
         subprocess.Popen(
-            [_find_comfy_python(comfy_dir), "main.py"],
-            cwd=str(comfy_dir),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            [
+                _find_comfy_python(COMFY_DIR),
+                "main.py",
+                "--listen", "0.0.0.0",
+                "--port", "8188",
+            ],
+            cwd=str(COMFY_DIR),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
         )
-        print(f"🚀 [ComfyUI] 已於背景啟動 ({comfy_dir})")
+        print(f"🚀 [ComfyUI] 已於背景啟動 ({COMFY_DIR})")
+        print(f"   啟動紀錄: {log_path}")
     except Exception as e:
         print(f"❌ [ComfyUI] 啟動失敗: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1) ComfyUI 檢查 (放到執行緒，避免卡住事件迴圈)
-    await asyncio.to_thread(_start_comfy_if_needed)
+    # 0) 檢查 GPU 與 PyTorch 是否相容
+    _check_gpu()
 
-    # 2) 預載 LLM，避免第一個請求才載入模型而逾時 (可用 PRELOAD_LLM=0 關閉)
+    # 1) 先預載 LLM，讓它先取得 VRAM (可用 PRELOAD_LLM=0 關閉)
     if os.environ.get("PRELOAD_LLM", "1") != "0":
         try:
             await asyncio.to_thread(preload_llm)
         except Exception as e:
             print(f"❌ LLM 預載失敗 (之後第一次請求會再嘗試載入): {e}")
+
+    # 2) LLM 載入完成後，再啟動 ComfyUI，使用剩下的 VRAM
+    await asyncio.to_thread(_start_comfy_if_needed)
 
     yield
 
