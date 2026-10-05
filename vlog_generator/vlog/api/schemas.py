@@ -162,6 +162,7 @@ class TaskClue(BaseModel):
     seat_no: int
     clue_text: str
 
+# task_option / task_clue 沒設定時不輸出 (需搭配路由的 response_model_exclude_unset=True)
 class GeneratedTask(BaseModel):
     task_type: int
     task_describe: str
@@ -170,6 +171,11 @@ class GeneratedTask(BaseModel):
     task_option: Optional[List[TaskOption]] = None
     task_clue: Optional[List[TaskClue]] = None
 
+# 🆕 NPC 在節點親口說的台詞 (規格書以外的附加欄位)
+class NodeDialogues(BaseModel):
+    opening: str    # 玩家抵達時說的話
+    success: str    # 玩家完成任務後說的話
+
 class GeneratedNode(BaseModel):
     place_id: str
     sn_order: int
@@ -177,6 +183,7 @@ class GeneratedNode(BaseModel):
     location_codename: str
     sn_opening_text: str
     sn_success_text: str
+    dialogues: Optional[NodeDialogues] = None   # 🆕
     tasks: List[GeneratedTask]
 
 class StoryDetail(BaseModel):
@@ -185,9 +192,16 @@ class StoryDetail(BaseModel):
     story_synopsis: str
     story_badge: List[str]
 
+# 🆕 這份劇本的引導 NPC (規格書以外的附加欄位)；名稱避開上方對話節點用的 NpcInfo
+class StoryNpc(BaseModel):
+    name: str
+    role: str
+    intro: str
+
 class GeneratedStoryItem(BaseModel):
     story_no: int
     story: StoryDetail
+    npc: Optional[StoryNpc] = None              # 🆕
     nodes: List[GeneratedNode]
 
 class StoryTaskResponse(BaseModel):
