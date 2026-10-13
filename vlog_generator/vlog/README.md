@@ -1,6 +1,6 @@
 
 
-# 🎬 PlayTaiwan AI Vlog & NPC 智慧生成系統
+# PlayTaiwan AI Vlog & NPC 智慧生成系統
 
 本專案是一個基於 **FastAPI**、**Whisper (ASR)**、**Wav2Vec2 (SER)**、**Llama 3.2 (LLM)**、**Neo4j (RAG 圖形資料庫)**、**XTTSv2 (Zero-shot 語音複製)** 與 **ComfyUI (RTX 5090 繪圖引擎)** 的智慧影音與 AI 明信片生成系統。專為觀光推廣與在地數位創新設計，能自動分析語音情緒與內容，結合圖形資料庫脈絡，產出帶有精美自動配音的高質感 Vlog 影片、完美還原角色聲線的 NPC 互動語音，以及展覽圖錄風格的 AI 明信片。
 
