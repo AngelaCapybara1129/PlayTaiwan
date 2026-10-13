@@ -7,6 +7,9 @@ import edge_tts
 import urllib.parse
 import time
 import threading
+import asyncio       
+from gtts import gTTS
+from enum import Enum
 
 from typing import Optional, Dict, Any
 from api.schemas import StoryTaskRequest, StoryTaskResponse
@@ -57,25 +60,44 @@ async def execute_raw_cypher(req: CypherQueryRequest):
     except Exception as e:
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
-@router.post("/npc/speak")
+class NPCChoice(str, Enum):
+    zhen = "珍奶奶"
+    adali = "阿達力"
+    mo = "墨先生"
+    aji = "阿吉伯"
+    nini = "霓霓"
+    shuguang = "薯光"
+
+@router.post(
+    "/npc/speak",
+    summary="生成 NPC 語音 (XTTS Clone 模式)"
+)
 async def npc_speak_api(
-    text: str = Form("歡迎來到府城，請跟著我一起尋找失落的卷軸。"),
-    voice: str = Form("zh-TW-HsiaoChenNeural")
+    text: str = Form("年輕人，這條街的故事我最熟了！", description="NPC 要說的台詞內容"),
+    npc_name: NPCChoice = Form(NPCChoice.zhen, description="請選擇發聲的 NPC 角色")
 ):
-    task_id = str(uuid.uuid4())[:8]
-    output_filename = f"npc_{task_id}.mp3"
-    output_path = OUTPUT_DIR / output_filename
     try:
         os.makedirs(str(OUTPUT_DIR), exist_ok=True)
-        communicate = edge_tts.Communicate(text, voice, rate="+10%", pitch="+5Hz")
-        await communicate.save(str(output_path))
+        
+        # FastAPI 傳入的是 Enum 物件，我們用 .value 取出純字串 (例如 "珍奶奶")
+        actual_npc_name = npc_name.value
+        
+        # 呼叫 XTTS 生成服務
+        audio_path, vtt_path = await generate_tts(text=text, npc_name=actual_npc_name)
+        
+        output_filename = os.path.basename(audio_path)
+        task_id = output_filename.replace("tts_", "").replace(".wav", "")
+
         return {
             "status": "success",
             "task_id": task_id,
             "download_url": f"https://aiservice.angelalala.com/api/download/{output_filename}"
         }
+        
     except Exception as e:
+        print(f"❌ NPC 語音生成失敗: {str(e)}")
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 
 @router.post("/postcard/create_ai")
 async def create_ai_postcard_api(

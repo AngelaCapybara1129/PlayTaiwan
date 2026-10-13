@@ -41,3 +41,7 @@ ComfyUI/
 
 # Editorial Vision Studio
 editorial-vision-studio/
+
+vlog_generator/vlog/xtts_models/
+
+xtts_server/xtts_models/

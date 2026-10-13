@@ -160,6 +160,31 @@ def preload_llm():
     """伺服器啟動時呼叫，避免第一個請求才載入模型"""
     _get_llm()
 
+def generate_chat_text(
+    *,
+    system_prompt: str | None = None,
+    user_prompt: str,
+    temperature: float = 0.3,
+    max_new_tokens: int = 1200,
+) -> str:
+    """
+    經營策略聊天用：回傳純文字（已走 _LockedLLM 繁中轉換）。
+    取代舊 generate_merchant_advisor_report 固定 JSON skeleton。
+    """
+    llm = _get_llm()
+    messages = []
+    if system_prompt and system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt.strip()})
+    messages.append({"role": "user", "content": (user_prompt or "").strip()})
+
+    outputs = llm(
+        messages,
+        max_new_tokens=int(max_new_tokens),
+        temperature=float(temperature),
+        do_sample=True,
+    )
+    return outputs[0]["generated_text"][-1]["content"]
+
 
 # ============================================================
 # 1. Vlog 旁白生成
@@ -1572,3 +1597,85 @@ def generate_batch_story_tasks(req_dict: dict) -> dict:
     if "npc" not in first or "dialogues" not in ((first.get("nodes") or [{}])[0]):
         print("⚠️ api/schemas.py 尚未加入 npc / dialogues 欄位，這兩個欄位不會出現在回應裡")
     return dumped
+
+# def generate_merchant_advisor_report(req_data: dict) -> dict:
+#     llm = _get_llm()
+    
+#     merchant_name = req_data.get("merchant_name", "商家老闆")
+    
+#     # 🔥 AI 填空骨架 🔥
+#     skeleton_json = json.dumps({
+#         "audience_profile": "【一句話總結您的主力客群！】詳細用白話文解釋年齡、性別與交通方式的特徵...",
+#         "competitive_analysis": {
+#             "winning_at": "恭喜！您在【填寫表現好的KPI】擊敗了多數同業，這代表...",
+#             "lagging_behind": "需注意！您的【填寫落後的KPI】目前落後，這可能會導致..."
+#         },
+#         "actionable_advice": [
+#             "【營運優化建議】根據客人多搭乘OOO且停留X天，建議實體店面可以...",
+#             "【任務設計建議】針對您的主力客群，建議將原來的任務改為...以提升互動",
+#             "【社群行銷建議】為了提升社群分享率，您可以設定這樣的優惠誘因：..."
+#         ]
+#     }, ensure_ascii=False, indent=2)
+
+#     system_prompt = f"""你是一位頂尖的實體店面數位轉型顧問。
+# 你的任務是解讀複雜的客群數據與 KPI，用「熱情、專業且白話」的台灣繁體中文 (zh-TW)，為在地商家老闆撰寫一份簡短的經營建議書。老闆不喜歡看冰冷的數字，請把數據化為具體行動。
+# 【絕對最高指令】：
+# 1. 嚴格輸出純 JSON，不可包含 Markdown 標記。
+# 2. 保持 JSON 骨架結構完全不變，僅替換提示文字。
+# 3. 語氣要像面對面跟老闆聊天一樣親切，例如：「老闆您好！根據數據...」。
+# 4. 建議必須「具體且落地」，嚴禁寫出「請加強行銷」這種空洞廢話，要寫出「請加強哪一種行銷、配合什麼活動」。
+# """
+
+#     user_prompt = f"""請參考以下商家的系統數據與 Neo4j 客群輪廓：
+# {json.dumps(req_data, ensure_ascii=False, indent=2)}
+
+# 請將以下的 JSON 骨架中的提示文字，替換成針對【{merchant_name}】的專屬經營分析報告：
+# {skeleton_json}
+# """
+
+#     messages = [
+#         {"role": "system", "content": system_prompt},
+#         {"role": "user", "content": user_prompt},
+#     ]
+
+#     max_retries = 2
+#     last_error = None
+#     for attempt in range(max_retries):
+#         response_text = ""
+#         try:
+#             outputs = llm(messages, max_new_tokens=2000, temperature=0.7, do_sample=True)
+#             response_text = outputs[0]["generated_text"][-1]["content"]
+
+#             # 繁簡轉換防呆 (保護台灣用語)
+#             try:
+#                 import opencc
+#                 cc = opencc.OpenCC('s2twp')
+#                 response_text = cc.convert(response_text)
+#             except ImportError:
+#                 pass
+
+#             start, end = response_text.find("{"), response_text.rfind("}") + 1
+#             if start == -1 or end == 0:
+#                 raise ValueError("回應中找不到 JSON")
+
+#             raw = json.loads(response_text[start:end])
+            
+#             # 使用 Pydantic 驗證格式是否正確
+#             from api.schemas import MerchantAdvisorResponse
+#             validated = MerchantAdvisorResponse.model_validate(raw)
+
+#             return validated.model_dump()
+
+#         except Exception as e:
+#             last_error = e
+#             print(f"⚠️ 商家顧問報告生成失敗，重試中 ({attempt+1}/{max_retries}): {e}")
+
+#     raise RuntimeError(f"商家顧問報告生成失敗: {last_error}")
+
+def generate_merchant_advisor_report(req_data: dict) -> dict:
+    """已停用：改走 visitor_analysis 策略聊天。"""
+    raise RuntimeError(
+        "舊版 /merchant/advisor 固定 prompt 已停用。"
+        "請改呼叫 POST /internal/visitor-analysis/strategy/generate"
+        "（attraction_uid + question）。"
+    )

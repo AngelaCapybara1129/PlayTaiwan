@@ -130,7 +130,16 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 # 將 api/routes.py 寫好的端點掛載上來
-app.include_router(vlog_router, prefix="/api")
+#app.include_router(vlog_router, prefix="/api")
+
+# Mount api/routes.py under /api
+API_PREFIX = "/api"
+app.include_router(vlog_router, prefix=API_PREFIX)
+
+# Strategy chat (RAG): paths match .NET VisitorAnalysisAiGateway (no /api prefix)
+from visitor_analysis.routes import router as visitor_analysis_router
+
+app.include_router(visitor_analysis_router)
 
 if __name__ == "__main__":
     # reload=True 每次存檔都會重啟並重新載入 8B 模型，且背景任務會中斷。

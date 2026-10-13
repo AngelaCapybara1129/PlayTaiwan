@@ -1,0 +1,36 @@
+{
+  "documents": [
+    {
+      "filename": "Taiwan Tourism 2030 台灣觀光政策白皮書 專書.pdf",
+      "title": "Taiwan Tourism 2030 台灣觀光政策白皮書 專書",
+      "agency": "交通部觀光署",
+      "year": 2026,
+      "source_url": "https://admin.taiwan.net.tw/zhengce/FilePage?a=213",
+      "category": "觀光政策"
+    },
+    {
+      "filename": "Tourism 2030 臺灣觀光邁向2030方案(115-119年)核定本.pdf",
+      "title": "Tourism 2030 臺灣觀光邁向2030方案(115-119年)核定本",
+      "agency": "交通部觀光署",
+      "year": 2026,
+      "source_url": "https://admin.taiwan.net.tw/zhengce/Articles?a=24020",
+      "category": "觀光政策"
+    },
+    {
+      "filename": "申請須知.pdf",
+      "title": "申請須知",
+      "agency": "經濟部",
+      "year": 2026,
+      "source_url": "https://www.moea.gov.tw/MNS/populace/news/News.aspx?kind=2&menu_id=41&news_id=121941",
+      "category": "數位轉型"
+    },
+    {
+      "filename": "中小微企業數位轉型計畫.pdf",
+      "title": "中小微企業數位轉型計畫",
+      "agency": "經濟部",
+      "year": 2026,
+      "source_url": "https://www.sme.gov.tw/article-tw-2877-13893?",
+      "category": "數位轉型"
+    }
+  ]
+}
