@@ -78,6 +78,9 @@ from services.tts_service import generate_tts
 
 from api.story_task_schemas import PublicStoryTaskRequest, PublicStoryTaskResponse
 from services.story_tasks_service import generate_public_story_tasks
+from api.story_tasks_endpoint_contract import (
+    build_story_tasks_endpoint_result,
+)
 
 
 router = APIRouter()
@@ -1235,10 +1238,13 @@ async def api_get_blueprint_job(job_id: str):
     return job_queue.get(job_id)
 
 # ============================================================
-# 劇本任務生成 API：批次故事排隊生成
+# 劇本任務生成 API：單套、多節點、多任務，排隊生成
 #
 # POST：驗證輸入、提交任務，回傳 HTTP 202
 # GET /api/jobs/{task_id}：查詢進度與結果
+#
+# 共用生成器保留完整角色與台詞。
+# 僅此端點透過轉接層輸出 story + nodes。
 # ============================================================
 @router.post(
     "/stories/tasks",
@@ -1293,13 +1299,9 @@ async def create_single_story_tasks(
             "正在驗證公開回應格式",
         )
 
-        validated = PublicStoryTaskResponse.model_validate(
-            generated
-        )
-
-        result = validated.model_dump(
-            mode="json",
-            exclude_unset=True,
+        result = build_story_tasks_endpoint_result(
+            generated=generated,
+            request_data=request_data,
         )
 
         print(

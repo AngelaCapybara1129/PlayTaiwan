@@ -72,7 +72,7 @@ def _read_input(prompt):
     return data, retry_note
 
 
-def _make_quiz(spec, context):
+def _make_quiz(spec, context, retry_note=""):
     description = _text(
         str(spec.get("description") or "").strip()
     )
@@ -99,62 +99,148 @@ def _make_quiz(spec, context):
     answer = None
     last_error = ""
 
-    # 先把出題目標限縮為「原文中的具體短詞」。
+    place_name = _text(
+        str(spec.get("name") or "")
+    )
+
     for attempt in range(3):
-        prompt = f"""請從下方介紹選出一個適合閱讀填空題的答案。
+        candidate = ""
 
-只輸出答案本身，不加引號、編號或說明。
+        prompt = f"""你正在進行「原文字詞擷取」，不是回答歷史知識問題。
 
-要求：
-一、答案必須是原文中連續出現的二至十二字短詞。
-二、優先選具體動物名稱、教育理念、明確物件或具體特色。
-三、不要選景點名稱、地區名稱或泛稱。
-四、不要選「動物園」「動物」「園區」「景點」「遊客」。
-五、不要改寫或自行補充原文沒有的詞。
-六、不要選先前被退回的答案。
+請從下方介紹原文，直接複製一個適合閱讀填空題的短詞。
+只輸出複製出的短詞，不加引號、編號或說明。
+
+硬性要求：
+一、答案必須是下方原文中連續出現的二至十二字。
+二、不可依照常識、記憶或其他景點資訊回答。
+三、不可改寫、縮寫、拼接不同位置的文字或自行補字。
+四、可選建築樣式、用途、職稱、藝術類別、具體物件或其他具體特色。
+五、不要選景點名稱、地區名稱、代名詞或泛稱。
+六、逐字擷取，保留原文字形。
+七、先前被退回的答案禁止再次輸出。
 
 景點名稱：
-{spec.get("name", "")}
+{place_name}
 
 先前被退回的答案：
 {_dump(rejected_answers)}
 
-介紹原文：
+【介紹原文開始】
 {description}
+【介紹原文結束】
+
+輸出前，確認你要輸出的完整短詞真的連續出現在上述原文中。
+只輸出該短詞。
 """
 
+        if last_error:
+            prompt += (
+                "\n\n【上一輪失敗原因】\n"
+                + last_error
+                + "\n請改選原文中的另一個短詞，"
+                "不可重複先前被退回的答案。"
+            )
+
+        if retry_note:
+            prompt += (
+                "\n\n【外層驗證回饋，僅供修正錯誤】\n"
+                + retry_note[:1200]
+                + "\n本步驟仍只輸出一個原文短詞，"
+                "不要輸出 JSON 或其他欄位。"
+            )
+
         try:
-            candidate = _short_answer(prompt)
-            candidate = _text(candidate)
+            candidate = _text(
+                _short_answer(prompt)
+            )
 
             print(
                 "[問答答案選擇]"
                 f"｜第 {attempt + 1}/3 次"
+                f"｜景點={place_name!r}"
+                f"｜原文長度={len(description)}"
                 f"｜候選={candidate!r}"
+                f"｜原文包含候選={candidate in description}"
             )
 
+            if candidate in rejected_answers:
+                raise ValueError(
+                    f"不可重複已退回的答案：{candidate!r}"
+                )
+
             if not 2 <= len(candidate) <= 12:
-                raise ValueError("答案必須是二至十二字")
+                raise ValueError(
+                    "答案必須是二至十二字的原文短詞"
+                )
 
             if candidate not in description:
                 raise ValueError(
-                    "正確答案不是原文中的連續文字"
+                    f"候選 {candidate!r} 不在本次介紹原文中；"
+                    "請直接複製原文中的另一個連續短詞，"
+                    "不可憑歷史常識補寫或改寫"
                 )
 
             if candidate in generic_answers:
-                raise ValueError("答案過於籠統，請選具體短詞")
-
-            place_name = _text(
-                str(spec.get("name") or "")
-            )
+                raise ValueError(
+                    f"候選 {candidate!r} 過於籠統，"
+                    "請改選具體特色"
+                )
 
             if candidate in place_name:
                 raise ValueError(
-                    "本版閱讀填空不使用景點名稱作答"
+                    "本版閱讀填空不使用景點名稱"
+                    "或景點名稱中的片段作答"
                 )
 
-            if candidate in rejected_answers:
-                raise ValueError("不可重複已退回的答案")
+            if re.search(r"[，。；：！？、\s]", candidate):
+                raise ValueError(
+                    "答案必須是單一完整短詞，"
+                    "不可包含空白或句子標點"
+                )
+
+            if candidate.endswith(
+                ("的", "之", "與", "和", "及", "或", "是", "為")
+            ):
+                raise ValueError(
+                    f"候選 {candidate!r} 是不完整片語；"
+                    "請改選具有完整意義的名詞或專有名稱"
+                )
+
+            if candidate.startswith(
+                (
+                    "是",
+                    "為",
+                    "目前",
+                    "現今",
+                    "當時",
+                    "這座",
+                    "這個",
+                    "該館",
+                    "該處",
+                )
+            ):
+                raise ValueError(
+                    f"候選 {candidate!r} 帶有句子開頭"
+                    "或時間修飾語；請改選完整名詞"
+                )
+
+            if any(
+                word in candidate
+                for word in (
+                    "最大",
+                    "最小",
+                    "最早",
+                    "最古老",
+                    "唯一",
+                    "第一",
+                )
+            ):
+                raise ValueError(
+                    "本版閱讀填空不選排名、"
+                    "最高級或唯一性描述作為答案；"
+                    "請改選具體名詞或特色名稱"
+                )
 
             answer = candidate
             break
@@ -163,8 +249,7 @@ def _make_quiz(spec, context):
             last_error = str(exc)
 
             if (
-                "candidate" in locals()
-                and candidate
+                candidate
                 and candidate not in rejected_answers
             ):
                 rejected_answers.append(candidate)
@@ -176,7 +261,10 @@ def _make_quiz(spec, context):
 
     if answer is None:
         raise ValueError(
-            "無法從介紹選出合格的具體答案："
+            "無法從介紹選出合格的具體答案；"
+            f"景點={place_name!r}；"
+            f"已退回答案={_dump(rejected_answers)}；"
+            "最後原因："
             + last_error
         )
 
@@ -216,6 +304,7 @@ def _make_quiz(spec, context):
 
     distractors = None
     option_error = ""
+    rejected_option_groups = []
 
     # 一次規劃三個選項，不逐筆延續第一個選項。
     for attempt in range(3):
@@ -241,6 +330,12 @@ def _make_quiz(spec, context):
 八、它們只作為錯誤選項，不是在介紹真實景點。
 """
 
+        if rejected_option_groups:
+            prompt += (
+                "\n\n先前未通過的選項組：\n"
+                + _dump(rejected_option_groups)
+                + "\n請重新設計，不要再輸出相同的失敗選項組。"
+            )
         if option_error:
             prompt += (
                 "\n上次未通過原因："
@@ -296,6 +391,19 @@ def _make_quiz(spec, context):
                 raise ValueError(
                     "四個選項不可重複或只差空白與字形"
                 )
+            distractor_keys = keys[1:]
+
+            for left_index, left in enumerate(
+                distractor_keys
+            ):
+                for right in distractor_keys[
+                    left_index + 1:
+                ]:
+                    if left in right or right in left:
+                        raise ValueError(
+                            "干擾選項彼此不可只是加字、"
+                            "延伸或縮寫，請改用不同概念"
+                        )
 
             normalized_evidence = option_key(evidence)
             normalized_answer = option_key(answer)
@@ -321,6 +429,14 @@ def _make_quiz(spec, context):
 
         except ValueError as exc:
             option_error = str(exc)
+
+            if (
+                candidates
+                and candidates not in rejected_option_groups
+            ):
+                rejected_option_groups.append(
+                    candidates.copy()
+                )
 
             print(
                 "[問答選項整組診斷] 未通過："
@@ -530,7 +646,11 @@ def generate_task_batch(prompts: list, max_new_tokens: int) -> list:
                 )
 
             if task_type in (6, 7):
-                data = _make_quiz(spec, context)
+                data = _make_quiz(
+                    spec,
+                    context,
+                    retry_note=retry_note,
+                )
             elif task_type == 5:
                 data = _make_cooperation(spec, context)
             else:
