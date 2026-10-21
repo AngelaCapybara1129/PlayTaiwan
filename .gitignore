@@ -1,47 +1,105 @@
+# ============================================================
+# Local secrets and environment configuration
+# ============================================================
+.env
+.env.*
+
+# Only commit sanitized example configuration
+!.env.example
+
+
+# ============================================================
 # Python environments
+# ============================================================
 .venv/
 venv/
 env/
 ENV/
-*/venv/
-*/.venv/
 
+
+# ============================================================
 # Python libraries / generated environments
+# These broad rules preserve the project's existing policy.
+# ============================================================
 **/lib/
 **/lib64/
 **/include/
 **/share/
 **/pyvenv.cfg
+**/bin/
 
-# Python cache
+
+# ============================================================
+# Python cache and compiled files
+# ============================================================
 __pycache__/
 *.py[cod]
 *.so
 *$py.class
 
+
+# ============================================================
 # Tool cache
+# ============================================================
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
 .tox/
 
-# Generated project data
-vlog_generator/vlog/output/
-vlog_generator/vlog/assets/
-**/bin/
 
+# ============================================================
+# Generated project data and local assets
+# ============================================================
+/vlog_generator/vlog/output/
+/vlog_generator/vlog/assets/
+
+
+# ============================================================
+# Temporary backups
+# ============================================================
+*.bak
+*.orig
+*.rej
+
+/vlog_generator/vlog/requirements.before_arrow_fix.txt
+
+
+# ============================================================
 # Database generated data
+# ============================================================
 dbs/*.dump
 dbs/*.cypher
 dbs/temp/
 neo4j_data/
 
+
+# ============================================================
 # Local ComfyUI installation
-ComfyUI/
+# ============================================================
+/ComfyUI/
 
-# Editorial Vision Studio
-editorial-vision-studio/
 
-vlog_generator/vlog/xtts_models/
+# ============================================================
+# Local Editorial Vision Studio installation
+# ============================================================
+/editorial-vision-studio/
 
-xtts_server/xtts_models/
+
+# ============================================================
+# Local F5-TTS installation
+# ============================================================
+/vlog_generator/F5-TTS/
+
+
+# ============================================================
+# XTTS environments, models and generated audio
+# ============================================================
+/vlog_generator/vlog/xtts_models/
+/xtts_server/.venv/
+/xtts_server/xtts_models/
+/xtts_server/output/
+
+# Reference audio is local by default.
+# Commit only when licensing and privacy have been reviewed.
+/xtts_server/speakers/
+/vlog_generator/F5-TTS/
