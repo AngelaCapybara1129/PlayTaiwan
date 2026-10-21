@@ -7,6 +7,17 @@ ASSETS_DIR = BASE_DIR / "assets"
 IMAGES_DIR = ASSETS_DIR / "images"
 AUDIO_DIR = ASSETS_DIR / "audio"
 BGM_DIR = ASSETS_DIR / "bgm"
+# 自動選曲使用的曲庫，與原本的上傳音樂資料夾分開。
+BGM_LIBRARY_DIR = ASSETS_DIR / "bgm_library"
+
+BGM_MOODS = (
+    "cheerful",
+    "relaxed",
+    "warm",
+    "nostalgic",
+    "adventurous",
+    "neutral",
+)
 OUTPUT_DIR = BASE_DIR / "output"
 
 VLOG_WIDTH = 1080

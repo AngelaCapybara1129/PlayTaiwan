@@ -5,14 +5,55 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+# ============================================================
+# 先載入環境設定，再匯入專案模組
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / ".env"
+
+load_dotenv(
+    dotenv_path=ENV_PATH,
+    override=False,
+    encoding="utf-8-sig",
+)
+
+print(f"📄 [ENV] 設定檔：{ENV_PATH}")
+print(f"📄 [ENV] 檔案存在：{ENV_PATH.is_file()}")
+print(
+    "🔐 [ENV] NEO4J_PASSWORD 已設定："
+    f"{bool(os.getenv('NEO4J_PASSWORD'))}"
+)
+
+if not os.getenv("NEO4J_PASSWORD"):
+    raise RuntimeError(
+        "缺少 NEO4J_PASSWORD。\n"
+        f"請確認 {ENV_PATH} 內已設定非空的資料庫密碼。\n"
+        "如果目前 PowerShell 已存在同名的空白環境變數，"
+        "請先移除該空值後重新啟動。"
+    )
+
+
+# ============================================================
+# 環境設定載入後，才匯入套件與專案模組
+# ============================================================
+
 import requests
 import uvicorn
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from api.routes import router as vlog_router
-from core.config import COMFY_DIR, COMFY_DIR_CANDIDATES, COMFY_URL
+from core.config import (
+    COMFY_DIR,
+    COMFY_DIR_CANDIDATES,
+    COMFY_URL,
+)
 from services.llm_service import preload_llm
+from services.job_queue import job_queue
 
 
 def _check_gpu():
@@ -90,20 +131,31 @@ def _start_comfy_if_needed():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 0) 檢查 GPU 與 PyTorch 是否相容
+    # 0. 檢查 GPU
     _check_gpu()
 
-    # 1) 先預載 LLM，讓它先取得 VRAM (可用 PRELOAD_LLM=0 關閉)
+    # 1. 預載 LLM
     if os.environ.get("PRELOAD_LLM", "1") != "0":
         try:
             await asyncio.to_thread(preload_llm)
         except Exception as e:
-            print(f"❌ LLM 預載失敗 (之後第一次請求會再嘗試載入): {e}")
+            print(
+                "❌ LLM 預載失敗"
+                f"（之後第一次請求會再嘗試載入）：{e}"
+            )
 
-    # 2) LLM 載入完成後，再啟動 ComfyUI，使用剩下的 VRAM
+    # 2. 啟動 ComfyUI
     await asyncio.to_thread(_start_comfy_if_needed)
 
-    yield
+    # 3. 啟動任務佇列
+    await job_queue.start()
+
+    try:
+        yield
+
+    finally:
+        # 正常關閉時停止接單，等待已接受的任務完成
+        await job_queue.stop()
 
 
 app = FastAPI(

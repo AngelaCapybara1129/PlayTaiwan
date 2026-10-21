@@ -1,52 +1,95 @@
-import os
-import uuid
-import shutil
+import logging
+import asyncio
 import json
-import zipfile
-import edge_tts
-import urllib.parse
-import time
+import os
+import shutil
 import threading
-import asyncio       
-from gtts import gTTS
+import time
+import urllib.parse
+import uuid
+import zipfile
 from enum import Enum
+from typing import Any, Dict, Optional
 
-from typing import Optional, Dict, Any
-from api.schemas import StoryTaskRequest, StoryTaskResponse
-from pydantic import BaseModel, Field
-from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException, Request, Body
+import edge_tts
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
+from api.story_generation_schemas import (
+    StoryGenerationResult,
+)
 
+from services.story_workflow_service import (
+    generate_story_workflow,
+    internal_error_result,
+)
+from api.schemas import (
+    SingleStoryTaskRequest,
+    SingleStoryTaskResponse,
+    StoryTaskRequest,
+    StoryTaskResponse,
+)
 from core.config import (
-    IMAGES_DIR,
     AUDIO_DIR,
     BGM_DIR,
-    OUTPUT_DIR
+    IMAGES_DIR,
+    OUTPUT_DIR,
 )
-
 from services.asr_service import transcribe_audio
-from services.llm_service import generate_vlog_content_with_template, parse_user_intent_agent, tool_call_create_calendar_event, generate_single_spot_puzzle, parse_script_request_agent, generate_batch_story_tasks
-from services.tts_service import generate_tts
-from services.moviepy_service import process_vlog_task
-from services.ser_service import analyze_emotion
-from services.postcard_service import (
-    generate_postcard_text,
-    generate_ai_postcard_image
+from services.bgm_service import select_bgm
+from services.job_queue import job_queue
+from services.llm_service import (
+    analyze_vlog_music_style,
+    generate_batch_story_tasks,
+    generate_merchant_vlog_content,
+    generate_script_blueprint,
+    generate_single_spot_puzzle,
+    generate_single_story_tasks,
+    generate_story_node,
+    generate_vlog_content_with_template,
+    parse_script_request_agent,
+    parse_user_intent_agent,
+    tool_call_create_calendar_event,
 )
-from services.llm_service import generate_story_node, generate_script_blueprint
-from services.neo4j_rag_service import search_neo4j_rag, execute_readonly_cypher, fetch_locations_for_script, fetch_spot_complete_info, find_spots_by_intent
+from services.moviepy_service import process_vlog_task
+from services.neo4j_rag_service import (
+    execute_readonly_cypher,
+    fetch_locations_for_script,
+    fetch_spot_complete_info,
+    find_spots_by_intent,
+    search_neo4j_rag,
+    recommend_locations_for_script,
+)
+from services.postcard_service import (
+    generate_ai_postcard_image,
+    generate_postcard_text,
+)
+from services.ser_service import analyze_emotion
+from services.tts_service import generate_tts
+
+from api.story_task_schemas import PublicStoryTaskRequest, PublicStoryTaskResponse
+from services.story_tasks_service import generate_public_story_tasks
+
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-@router.post("/admin/upload_dump")
-async def upload_dump_file(file: UploadFile = File(...)):
-    try:
-        target_path = OUTPUT_DIR.parent / file.filename
-        with open(target_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"status": "success", "filename": file.filename, "message": "Dump 檔案上傳成功！"}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+@router.get(
+    "/jobs/{task_id}",
+    summary="查詢 AI 任務排隊與生成狀態",
+)
+async def get_ai_job(task_id: str):
+    return job_queue.get(task_id)
+
 
 class CypherQueryRequest(BaseModel):
     query: str = Field(default="MATCH (a:Attraction) RETURN a.name LIMIT 5")
@@ -67,36 +110,78 @@ class NPCChoice(str, Enum):
     aji = "阿吉伯"
     nini = "霓霓"
     shuguang = "薯光"
+    wan = "王俊凱"
+
+class VideoOrientation(str, Enum):
+    portrait = "portrait"
+    landscape = "landscape"
+
+
+class BgmMood(str, Enum):
+    auto = "auto"
+    cheerful = "cheerful"
+    relaxed = "relaxed"
+    warm = "warm"
+    nostalgic = "nostalgic"
+    adventurous = "adventurous"
+    neutral = "neutral"
+    none = "none"
 
 @router.post(
     "/npc/speak",
-    summary="生成 NPC 語音 (XTTS Clone 模式)"
+    summary="生成 NPC 語音（排隊模式）",
+    status_code=202,
 )
 async def npc_speak_api(
-    text: str = Form("年輕人，這條街的故事我最熟了！", description="NPC 要說的台詞內容"),
-    npc_name: NPCChoice = Form(NPCChoice.zhen, description="請選擇發聲的 NPC 角色")
+    text: str = Form(
+        "年輕人，這條街的故事我最熟了！",
+        description="NPC 要說的台詞內容",
+    ),
+    npc_name: NPCChoice = Form(
+        NPCChoice.zhen,
+        description="請選擇發聲的 NPC 角色",
+    ),
 ):
-    try:
-        os.makedirs(str(OUTPUT_DIR), exist_ok=True)
-        
-        # FastAPI 傳入的是 Enum 物件，我們用 .value 取出純字串 (例如 "珍奶奶")
-        actual_npc_name = npc_name.value
-        
-        # 呼叫 XTTS 生成服務
-        audio_path, vtt_path = await generate_tts(text=text, npc_name=actual_npc_name)
-        
+    text = text.strip()
+
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="台詞不可為空白",
+        )
+
+    if len(text) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="單次 NPC 台詞最多 1000 字",
+        )
+
+    task_id = uuid.uuid4().hex
+    actual_npc_name = npc_name.value
+
+    async def execute_job():
+        job_queue.stage(task_id, "正在生成語音")
+
+        audio_path, vtt_path = await generate_tts(
+            text=text,
+            npc_name=actual_npc_name,
+        )
+
         output_filename = os.path.basename(audio_path)
-        task_id = output_filename.replace("tts_", "").replace(".wav", "")
 
         return {
-            "status": "success",
-            "task_id": task_id,
-            "download_url": f"https://aiservice.angelalala.com/api/download/{output_filename}"
+            "filename": output_filename,
+            "download_url": (
+                "https://aiservice.angelalala.com"
+                f"/api/download/{output_filename}"
+            ),
         }
-        
-    except Exception as e:
-        print(f"❌ NPC 語音生成失敗: {str(e)}")
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+    return job_queue.submit(
+        task_type="npc_tts",
+        factory=execute_job,
+        task_id=task_id,
+    )
 
 
 @router.post("/postcard/create_ai")
@@ -126,16 +211,41 @@ async def create_ai_postcard_api(
 @router.get("/check_status/{task_id}")
 async def check_status(task_id: str):
     try:
-        for file_path in OUTPUT_DIR.glob(f"*{task_id}*.*"):
-            if file_path.is_file() and not file_path.name.startswith("metadata_"):
-                return {
-                    "status": "ready",
-                    "filename": file_path.name,
-                    "download_url": f"https://aiservice.angelalala.com/api/download/{file_path.name}"
-                }
-        return {"status": "processing", "task_id": task_id}
+        # 僅接受任務 ID，避免被用來組出任意路徑
+        if (
+            not task_id
+            or len(task_id) > 64
+            or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in task_id)
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "無效的 task_id"}
+            )
+
+        final_filename = f"vlog_visitor_{task_id}.mp4"
+        final_path = OUTPUT_DIR / final_filename
+
+        if final_path.is_file() and final_path.stat().st_size > 0:
+            return {
+                "status": "ready",
+                "task_id": task_id,
+                "filename": final_filename,
+                "download_url": (
+                    "https://aiservice.angelalala.com"
+                    f"/api/download/{final_filename}"
+                )
+            }
+
+        return {
+            "status": "processing",
+            "task_id": task_id
+        }
+
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
 
 @router.get("/download/{filename}")
 async def download_file(filename: str):
@@ -241,93 +351,653 @@ async def visitor_vlog_preview_api(req: VisitorVlogPreviewRequest):
 
 
 # ============================================================
-# 模式一：遊客端 - 確認後的正式影音合成端點 (改為非同步背景任務，防 502 逾時)
+# 遊客端：自動配樂正式產片
 # ============================================================
-@router.post("/visitor/vlog/create_final")
+@router.post(
+    "/visitor/vlog/create_final",
+    summary="生成旅遊 Vlog（文字分析自動配樂、排隊模式）",
+    status_code=202,
+)
 async def visitor_vlog_final_api(
-    bg_tasks: BackgroundTasks,
-    final_script: str = Form(..., description="經使用者確認或微調後的最終旁白"),
-    image_zip: UploadFile = File(..., description="闖關過程中上傳的照片/影片壓縮檔"),
-    bgm_file: UploadFile = File(..., description="背景音樂檔 (mp3)"),
-    spot_meta_json: str = Form('[]', description="對應圖片與地點時間的中繼資料 JSON")
+    final_script: str = Form(
+        ...,
+        description="經使用者確認的最終旁白，不可空白，最多 5000 字。",
+    ),
+    image_zip: UploadFile = File(
+        ...,
+        description=(
+            "照片 ZIP，支援 PNG、JPG、JPEG、WEBP。"
+            "目前不支援將影片放進 ZIP 直接合成。"
+        ),
+    ),
+    spot_meta_json: str = Form(
+        ...,
+        title="圖片與地點中繼資料 JSON",
+        description="""每張圖片需有一筆資料，陣列順序就是播放順序。
+
+必要欄位：
+- file_name：ZIP 內實際圖片檔名，包含副檔名，區分大小寫。
+- spot_name：影片左上角顯示的地點名稱。
+
+選填欄位：
+- location_codename：景點或任務代號。
+- visit_time：造訪時間。
+- motion_type：push_in、pull_out、pan_left、pan_right、still。
+
+圖片在子資料夾時，file_name 仍只填檔名。
+ZIP 不可有同名圖片，每張圖片必須恰好對應一筆資料。
+
+範例：
+
+```json
+[
+  {
+    "file_name": "001.jpg",
+    "spot_name": "環湖茶園",
+    "location_codename": "茶香起點",
+    "visit_time": "14:30",
+    "motion_type": "push_in"
+  },
+  {
+    "file_name": "002.jpg",
+    "spot_name": "竹林步道",
+    "location_codename": "竹影秘境",
+    "visit_time": "15:20",
+    "motion_type": "pan_right"
+  },
+  {
+    "file_name": "003.jpg",
+    "spot_name": "旅程紀念合照",
+    "location_codename": "回憶終點",
+    "visit_time": "16:10",
+    "motion_type": "pull_out"
+  }
+]
+```
+""",
+    ),
+    user_memory_text: str = Form(
+        "",
+        description=(
+            "選填，使用者原始旅遊感想，最多 3000 字。"
+            "自動配樂會結合這段文字與最終旁白判斷風格。"
+            "例如：和朋友一起完成任務，覺得很有成就感。"
+            "未填時只分析 final_script。"
+        ),
+    ),
+    bgm_mood: BgmMood = Form(
+        BgmMood.auto,
+        description=(
+            "auto：分析文字自動選曲；"
+            "cheerful：輕快；relaxed：悠閒；warm：溫馨；"
+            "nostalgic：回憶；adventurous：探索；"
+            "neutral：中性；none：不配樂。"
+        ),
+    ),
+    video_orientation: VideoOrientation = Form(
+        VideoOrientation.landscape,
+        description=(
+            "portrait：1080×1920；"
+            "landscape：1920×1080。"
+        ),
+    ),
 ):
-    task_id = str(uuid.uuid4())[:8]
-    filename = f"vlog_visitor_{task_id}.mp4"
+    final_script = final_script.strip()
+    user_memory_text = user_memory_text.strip()
+
+    if not final_script:
+        raise HTTPException(
+            status_code=400,
+            detail="旁白不可為空白",
+        )
+
+    if len(final_script) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="旁白最多 5000 字",
+        )
+
+    if len(user_memory_text) > 3000:
+        raise HTTPException(
+            status_code=400,
+            detail="原始旅遊感想最多 3000 字",
+        )
 
     try:
-        # 1. 快速處理上傳檔案解壓縮與暫存 (確保秒速回應 API，不讓 Cloudflare 逾時)
         meta_mapping = json.loads(spot_meta_json)
-        full_image_paths, bgm_path = process_uploads(task_id, image_zip, bgm_file)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "spot_meta_json 不是有效 JSON："
+                f"第 {exc.lineno} 行、第 {exc.colno} 欄"
+            ),
+        ) from exc
 
-        # 2. 依照前端傳來的 meta_mapping 順序對應圖片
-        sorted_image_paths = []
-        for file_info in meta_mapping:
-            target_name = file_info.get("file_name", "")
-            matched_path = next((p for p in full_image_paths if os.path.basename(p) == target_name), None)
-            if matched_path:
-                sorted_image_paths.append(matched_path)
+    if (
+        not isinstance(meta_mapping, list)
+        or not meta_mapping
+        or not all(isinstance(item, dict) for item in meta_mapping)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="spot_meta_json 必須是非空的物件陣列",
+        )
 
-        if not sorted_image_paths:
-            sorted_image_paths = full_image_paths
+    valid_motion_types = {
+        "push_in",
+        "pull_out",
+        "pan_left",
+        "pan_right",
+        "still",
+    }
 
-        # 3. 預先產生 TTS 旁白與 VTT 動態字幕 
+    normalized_metadata = []
+    used_names = set()
+
+    # 在寫入上傳檔案之前，先驗證 metadata 基本格式。
+    for index, item in enumerate(meta_mapping, start=1):
+        name = item.get("file_name")
+        spot_name = item.get("spot_name")
+
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {index} 筆缺少 file_name",
+            )
+
+        if not isinstance(spot_name, str) or not spot_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {index} 筆缺少 spot_name",
+            )
+
+        name = name.strip()
+
+        if name in used_names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"圖片重複指定：{name}",
+            )
+
+        normalized = dict(item)
+        normalized["file_name"] = name
+        normalized["spot_name"] = spot_name.strip()
+
+        for key in ("location_codename", "visit_time"):
+            value = item.get(key)
+
+            if value is None:
+                value = ""
+
+            if not isinstance(value, str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"第 {index} 筆 {key} 必須是字串",
+                )
+
+            normalized[key] = value.strip()
+
+        motion = item.get("motion_type")
+
+        if motion is not None:
+            if (
+                not isinstance(motion, str)
+                or motion not in valid_motion_types
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"第 {index} 筆 motion_type 無效",
+                )
+        else:
+            normalized.pop("motion_type", None)
+
+        used_names.add(name)
+        normalized_metadata.append(normalized)
+
+    task_id = uuid.uuid4().hex
+    filename = f"vlog_visitor_{task_id}.mp4"
+    orientation = video_orientation.value
+    requested_bgm = bgm_mood.value
+
+    # 使用既有照片上傳流程，不再要求使用者提供音樂。
+    try:
+        full_image_paths, _ = await asyncio.to_thread(
+            process_uploads,
+            task_id,
+            image_zip,
+            None,
+        )
+    except Exception as exc:
+        print(f"[任務 {task_id}] 上傳處理失敗：{exc}")
+        raise HTTPException(
+            status_code=400,
+            detail="照片 ZIP 處理失敗",
+        ) from exc
+
+    if not full_image_paths:
+        raise HTTPException(
+            status_code=400,
+            detail="ZIP 內沒有支援的圖片",
+        )
+
+    image_by_name = {}
+
+    for image_path in full_image_paths:
+        name = os.path.basename(image_path)
+
+        if name in image_by_name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ZIP 有同名圖片，請先重新命名：{name}",
+            )
+
+        image_by_name[name] = image_path
+
+    unknown_names = sorted(
+        used_names - set(image_by_name)
+    )
+    missing_metadata = sorted(
+        set(image_by_name) - used_names
+    )
+
+    print(
+        f"[任務 {task_id}] ZIP 實際圖片："
+        + json.dumps(
+            sorted(image_by_name),
+            ensure_ascii=False,
+        )
+    )
+
+    print(
+        f"[任務 {task_id}] metadata 指定圖片："
+        + json.dumps(
+            sorted(used_names),
+            ensure_ascii=False,
+        )
+    )
+
+    if unknown_names or missing_metadata:
+        print(
+            f"[任務 {task_id}] ❌ 配對失敗："
+            f"找不到圖片={unknown_names!r}；"
+            f"缺少地點資料={missing_metadata!r}"
+        )
+
+    if unknown_names or missing_metadata:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "圖片與地點資料無法完整配對",
+                "metadata_file_not_found": unknown_names,
+                "images_without_metadata": missing_metadata,
+                "available_image_files": sorted(image_by_name),
+            },
+        )
+
+    sorted_metadata = normalized_metadata
+    sorted_image_paths = [
+        image_by_name[item["file_name"]]
+        for item in sorted_metadata
+    ]
+
+    for index, meta in enumerate(sorted_metadata, start=1):
+        print(
+            f"[任務 {task_id}] 🏷️ "
+            f"{index}：{meta['file_name']}"
+            f" → {meta['spot_name']}"
+        )
+
+    async def execute_job():
+        bgm_path = None
+        selected_track = None
+
+        if requested_bgm == "none":
+            music_analysis = {
+                "mood": "none",
+                "reason": "使用者選擇不加入背景音樂。",
+                "analysis_source": "manual",
+            }
+        else:
+            job_queue.stage(
+                task_id,
+                "正在分析配樂風格",
+            )
+
+            if requested_bgm == "auto":
+                music_analysis = await asyncio.to_thread(
+                    analyze_vlog_music_style,
+                    user_type="visitor",
+                    final_script=final_script,
+                    original_text=user_memory_text,
+                )
+            else:
+                music_analysis = {
+                    "mood": requested_bgm,
+                    "reason": "使用者指定配樂風格。",
+                    "analysis_source": "manual",
+                }
+
+            job_queue.stage(
+                task_id,
+                "正在從本機曲庫選擇配樂",
+            )
+
+            selected_track = await asyncio.to_thread(
+                select_bgm,
+                mood=music_analysis["mood"],
+                selection_key=task_id,
+            )
+
+            bgm_path = selected_track["path"]
+
+            print(
+                f"[任務 {task_id}] 🎵 "
+                f"分析分類：{music_analysis['mood']}"
+                f"｜實際分類：{selected_track['selected_mood']}"
+                f"｜檔案：{selected_track['file_name']}"
+                f"｜原因：{music_analysis['reason']}"
+            )
+
+        job_queue.stage(
+            task_id,
+            "正在生成 XTTS 旁白",
+        )
+
         tts_path, vtt_path = await generate_tts(final_script)
 
-        # 4. 放入背景執行續 (BackgroundTasks) 執行耗時的 FFmpeg 影片合成，秒回 status: processing
-        bg_tasks.add_task(
+        job_queue.stage(
+            task_id,
+            "正在合成影片",
+        )
+
+        await asyncio.to_thread(
             process_vlog_task,
-            task_id, sorted_image_paths, "cinematic lighting",
-            tts_path, bgm_path, filename, "user_vlog",
-            merchant_name="", subtitle_text=final_script,
-            spot_metadata=meta_mapping,
-            vtt_file=vtt_path  # 🆕 把字幕檔案路徑傳進去
+            task_id,
+            sorted_image_paths,
+            "cinematic lighting",
+            tts_path,
+            bgm_path,
+            filename,
+            "user_vlog",
+            merchant_name="",
+            subtitle_text=final_script,
+            spot_metadata=sorted_metadata,
+            vtt_file=vtt_path,
+            video_orientation=orientation,
+        )
+
+        final_path = OUTPUT_DIR / filename
+
+        if not final_path.is_file() or final_path.stat().st_size == 0:
+            raise RuntimeError("沒有產生有效的正式影片")
+
+        # 對外不回傳伺服器本機絕對路徑。
+        public_track = (
+            {
+                key: value
+                for key, value in selected_track.items()
+                if key != "path"
+            }
+            if selected_track
+            else None
         )
 
         return {
-            "status": "processing",
-            "task_id": task_id,
-            "message": "影片正在背景加速合成中，請稍後透過 check_url 檢查狀態！",
-            "check_url": f"https://aiservice.angelalala.com/api/check_status/{task_id}"
+            "filename": filename,
+            "video_orientation": orientation,
+            "music_analysis": music_analysis,
+            "bgm": public_track,
+            "download_url": (
+                "https://aiservice.angelalala.com"
+                f"/api/download/{filename}"
+            ),
         }
-    except Exception as e:
-        print(f"❌ 遊客端最終產片失敗: {e}")
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+    return job_queue.submit(
+        task_type="vlog",
+        factory=execute_job,
+        task_id=task_id,
+    )
 
 # ============================================================
-# 模式二：商家端
+# 商家端：宣傳影片草稿預覽
 # ============================================================
-@router.post("/merchant/vlog/preview")
+@router.post(
+    "/merchant/vlog/preview",
+    summary="商家宣傳影片預覽（商家資料、Neo4j、配樂建議）",
+)
 async def merchant_vlog_preview_api(
-    merchant_name: str = Form(...),
-    promo_focus: str = Form(...)
+    merchant_name: str = Form(
+        ...,
+        description="商家名稱，不可空白。",
+    ),
+    promo_focus: str = Form(
+        ...,
+        description=(
+            "本次宣傳重點，例如：介紹既有品茶體驗。"
+            "想宣傳的項目仍須有商家介紹或資料庫內容支持。"
+        ),
+    ),
+    merchant_id: str = Form(
+        "",
+        description=(
+            "選填，Neo4j 商家 UID。"
+            "有填時優先依 UID 查詢，不再用名稱備援配對。"
+        ),
+    ),
+    merchant_info: str = Form(
+        "",
+        description=(
+            "選填，商家自行提供的介紹、服務內容與特色。"
+            "Neo4j 沒有可用介紹時，需提供此欄。"
+            "最多 4000 字。"
+        ),
+    ),
+    target_audience: str = Form(
+        "",
+        description="選填，目標客群，例如：喜歡慢旅行的旅客。",
+    ),
+    brand_style: str = Form(
+        "",
+        description="選填，品牌風格，例如：自然、溫暖、安靜。",
+    ),
+    promotion_goal: str = Form(
+        "",
+        description="選填，宣傳目的，例如：增加導覽詢問。",
+    ),
+    call_to_action: str = Form(
+        "",
+        description=(
+            "選填，商家已確認的結尾引導。"
+            "會直接附加到旁白及文案，不讓模型另編電話或網址。"
+        ),
+    ),
 ):
-    try:
-        spot_info = fetch_spot_complete_info(merchant_name)
-        if not spot_info["description"]:
-            return JSONResponse(status_code=404, content={"status": "warning", "message": f"Neo4j 資料庫查無「{merchant_name}」資訊，不進行幻覺補全。"})
+    fields = {
+        "merchant_name": merchant_name.strip(),
+        "promo_focus": promo_focus.strip(),
+        "merchant_id": merchant_id.strip(),
+        "merchant_info": merchant_info.strip(),
+        "target_audience": target_audience.strip(),
+        "brand_style": brand_style.strip(),
+        "promotion_goal": promotion_goal.strip(),
+        "call_to_action": call_to_action.strip(),
+    }
 
-        rag_context = f"商家名稱: {spot_info['name']}\n地址: {spot_info['address']}\n官方介紹: {spot_info['description']}"
-        script_data = generate_vlog_content_with_template(
-            raw_text=f"推廣重點: {promo_focus}",
-            emotion="平靜、放鬆、悠閒",
-            template="merchant_promo",
-            rag_context=rag_context,
-            promo_info=promo_focus
+    limits = {
+        "merchant_name": 120,
+        "promo_focus": 1000,
+        "merchant_id": 200,
+        "merchant_info": 4000,
+        "target_audience": 300,
+        "brand_style": 300,
+        "promotion_goal": 500,
+        "call_to_action": 500,
+    }
+
+    for key, value in fields.items():
+        if len(value) > limits[key]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} 最多 {limits[key]} 字",
+            )
+
+    if not fields["merchant_name"]:
+        raise HTTPException(
+            status_code=400,
+            detail="商家名稱不可空白",
         )
-        return {"status": "success", "retrieved_data": spot_info, "draft_preview": script_data}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
-# ============================================================
-# 遊戲推演與劇本藍圖生成 API
-# ============================================================
-@router.post("/v1/generate")
-async def generate_game_story(payload: dict = Body(...)):
+    if not fields["promo_focus"]:
+        raise HTTPException(
+            status_code=400,
+            detail="宣傳重點不可空白",
+        )
+
+    lookup_key = (
+        fields["merchant_id"]
+        or fields["merchant_name"]
+    )
+
+    warnings_list = []
+
     try:
-        result_dict = generate_story_node(payload)
-        return JSONResponse(status_code=200, content=result_dict)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+        spot_info = await asyncio.to_thread(
+            fetch_spot_complete_info,
+            lookup_key,
+        )
+    except Exception as exc:
+        print(f"⚠️ [商家預覽] Neo4j 查詢異常：{exc}")
+        spot_info = {}
+        warnings_list.append(
+            "商家資料查詢失敗；若有商家提供資訊，將使用該資訊。"
+        )
+
+    if not isinstance(spot_info, dict):
+        spot_info = {}
+
+    # 依目前 helper 的回傳慣例：
+    # 有非空 id，才視為取得資料庫紀錄。
+    # 查不到時 helper 會回傳輸入名稱，所以不能只看 name。
+    has_db_record = bool(spot_info.get("id"))
+
+    db_info = (
+        spot_info
+        if has_db_record
+        else {}
+    )
+
+    db_description = str(
+        db_info.get("description") or ""
+    ).strip()
+
+    if not has_db_record:
+        warnings_list.append(
+            "未取得可確認的資料庫紀錄；"
+            "這也可能是資料不足或查詢服務不可用。"
+        )
+
+    elif not db_description:
+        warnings_list.append(
+            "已取得資料庫紀錄，但沒有可用介紹。"
+        )
+
+    db_name = str(db_info.get("name") or "").strip()
+
+    if db_name and db_name != fields["merchant_name"]:
+        warnings_list.append(
+            f"資料庫名稱為「{db_name}」，"
+            f"輸入名稱為「{fields['merchant_name']}」，"
+            "請確認是否為同一商家。"
+        )
+
+    if not db_description and not fields["merchant_info"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "沒有足夠的商家介紹可生成宣傳稿。"
+                    "請補充 merchant_info，"
+                    "不能只靠商家名稱與宣傳目標編造服務。"
+                ),
+                "warnings": warnings_list,
+            },
+        )
+
+    source_records = []
+
+    if has_db_record:
+        source_records.append({
+            "source": "neo4j",
+            "id": str(db_info.get("id")),
+            "name": db_name,
+            "description_available": bool(db_description),
+        })
+
+    if fields["merchant_info"]:
+        source_records.append({
+            "source": "merchant_input",
+            "fields": ["merchant_info"],
+        })
+
+    try:
+        draft = await asyncio.to_thread(
+            generate_merchant_vlog_content,
+            merchant_name=fields["merchant_name"],
+            promo_focus=fields["promo_focus"],
+            merchant_info=fields["merchant_info"],
+            db_info=db_info,
+            target_audience=fields["target_audience"],
+            brand_style=fields["brand_style"],
+            promotion_goal=fields["promotion_goal"],
+            call_to_action=fields["call_to_action"],
+        )
+
+        music_suggestion = await asyncio.to_thread(
+            analyze_vlog_music_style,
+            user_type="merchant",
+            final_script=draft["tw_script"],
+            original_text=(
+                f"商家介紹：{fields['merchant_info']}\n"
+                f"宣傳重點：{fields['promo_focus']}\n"
+                f"目標客群：{fields['target_audience']}"
+            ),
+            brand_style=fields["brand_style"],
+            promotion_goal=fields["promotion_goal"],
+        )
+
+    except Exception as exc:
+        print(f"❌ [商家預覽] 生成失敗：{exc}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="商家預覽生成失敗，請查看後端日誌。",
+        ) from exc
+
+    return {
+        "status": "success",
+        "user_type": "merchant",
+        "merchant_name": fields["merchant_name"],
+        "retrieved_data": {
+            "id": db_info.get("id") or "",
+            "name": db_name,
+            "description": db_description,
+            "address": db_info.get("address") or "",
+        },
+        "draft_preview": {
+            "suggested_script": draft["tw_script"],
+            "promo_copy": draft["promo_copy"],
+            "seo_keywords": draft["seo_keywords"],
+            "music_suggestion": music_suggestion,
+            "review_notes": draft["review_notes"],
+            "generation_source": draft["generation_source"],
+        },
+        "data_sources": source_records,
+        "warnings": warnings_list,
+        "requires_review": True,
+    }
+
 
 class ScriptGenRequest(BaseModel):
     city_name: str = Field(default="臺南市")
@@ -442,126 +1112,206 @@ async def execute_agent_workflow(req: AgentRequest):
     except Exception as e:
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
+# ============================================================
+# 自然語言劇本藍圖
+# 統一使用 job_queue，不再使用 BLUEPRINT_JOBS / BackgroundTasks
+# ============================================================
+
 class ScriptTextPromptRequest(BaseModel):
     user_prompt: str = Field(
-        default="我們想要兩個人去臺南安平區來趟深度文學解謎之旅，大約走四個站點",
-        description="使用者輸入的自然語言文字或語音轉文字內容",
-        json_schema_extra={"example": "我們想要兩個人去臺南安平區來趟深度文學解謎之旅，大約走四個站點"}
+        default="我們想要兩個人去看雲海",
+        min_length=1,
+        max_length=3000,
+        description="使用者輸入的自然語言或語音轉文字內容",
+        json_schema_extra={
+            "example": "我們想要兩個人去看雲海"
+        },
     )
 
-# ============================================================
-# 劇本藍圖（自然語言版）：非同步任務，避免 Cloudflare 100 秒逾時 (524)
-# ============================================================
-BLUEPRINT_JOBS: Dict[str, Dict[str, Any]] = {}
-_JOBS_LOCK = threading.Lock()
-JOB_TTL_SECONDS = 60 * 60  # 任務結果保留 1 小時
 
-
-def _set_job(job_id: str, **fields):
-    with _JOBS_LOCK:
-        job = BLUEPRINT_JOBS.setdefault(job_id, {})
-        job.update(fields)
-        job["updated_at"] = time.time()
-
-
-def _cleanup_old_jobs():
-    now = time.time()
-    with _JOBS_LOCK:
-        expired = [j for j, v in BLUEPRINT_JOBS.items()
-                   if now - v.get("updated_at", now) > JOB_TTL_SECONDS]
-        for j in expired:
-            BLUEPRINT_JOBS.pop(j, None)
-
-
-def _run_blueprint_job(job_id: str, user_prompt: str):
-    t0 = time.time()
-    try:
-        _set_job(job_id, status="running", stage="解析使用者需求")
-        parsed = parse_script_request_agent(user_prompt)
-
-        city_name = parsed.get("city_name") or "臺南市"
-        town_name = parsed.get("town_name") or "中西區"
-        traveler_count = parsed.get("traveler_count") or 2
-        preferences = parsed.get("preferences") or ["解謎深入"]
-        transportation = parsed.get("transportation") or ["步行"]
-        if not isinstance(preferences, list):
-            preferences = [str(preferences)]
-        if not isinstance(transportation, list):
-            transportation = [str(transportation)]
-        try:
-            node_count = max(1, min(int(parsed.get("node_count") or 4), 8))
-        except (TypeError, ValueError):
-            node_count = 4
-        is_night = parsed.get("is_night") in (True, "true", "True")
-
-        _set_job(job_id, stage="查詢 Neo4j 地點", parsed_intent=parsed)
-        locations = fetch_locations_for_script(town_name=town_name, limit=node_count, is_night=is_night)
-        if not locations:
-            _set_job(job_id, status="error", error=f"找不到 {town_name} 地點資料。")
-            return
-
-        _set_job(job_id, stage="生成劇本藍圖")
-        script_blueprint = generate_script_blueprint(
-            city_name=city_name,
-            town_name=town_name,
-            locations=locations,
-            traveler_count=traveler_count,
-            preferences=preferences,
-            transportation=transportation,
-            is_night=is_night
-        )
-
-        _set_job(
-            job_id,
-            status="done",
-            stage="完成",
-            data=script_blueprint,
-            elapsed_seconds=round(time.time() - t0, 1)
-        )
-        print(f"✅ [藍圖任務 {job_id}] 完成，耗時 {time.time() - t0:.1f}s")
-    except Exception as e:
-        print(f"❌ [藍圖任務 {job_id}] 失敗: {e}")
-        _set_job(job_id, status="error", error=str(e))
-
-
-@router.post("/api/admin/generate_script_blueprint_by_text")
-def api_generate_script_blueprint_by_text(
+@router.post(
+    "/api/admin/generate_script_blueprint_by_text",
+    summary="【自動故事 v2】需求引導、候選審核與劇本生成",
+    operation_id="generate_story_from_text_auto_v2",
+    status_code=202,
+)
+async def api_generate_script_blueprint_by_text(
     req: ScriptTextPromptRequest,
-    bg_tasks: BackgroundTasks,
-    request: Request
+    request: Request,
 ):
-    """立刻回傳 job_id，實際生成在背景執行。"""
-    _cleanup_old_jobs()
-    job_id = uuid.uuid4().hex[:8]
-    _set_job(job_id, status="queued", stage="排隊中", data=None, error=None)
-    bg_tasks.add_task(_run_blueprint_job, job_id, req.user_prompt)
-    return {
-        "status": "processing",
-        "job_id": job_id,
-        "check_url": f"https://aiservice.angelalala.com{request.url.path.rstrip('/')}/{job_id}"
-    }
+    user_prompt = req.user_prompt.strip()
+
+    task_id = uuid.uuid4().hex
+
+    check_url = str(
+        request.app.url_path_for(
+            "get_ai_job",
+            task_id=task_id,
+        )
+    )
+
+    print(
+        "[AUTO-STORY-V2] 接收請求"
+        f"｜task_id={task_id}"
+        f"｜routes={__file__}"
+    )
+
+    async def execute_job():
+        job_queue.stage(
+            task_id,
+            "正在分析需求並查詢可用內容",
+        )
+
+        try:
+            generated = await asyncio.to_thread(
+                generate_story_workflow,
+                user_prompt,
+            )
+
+            validated = StoryGenerationResult.model_validate(
+                generated
+            )
+
+        except Exception:
+            logger.exception(
+                "[AUTO-STORY-V2] 未預期錯誤"
+                "｜task_id=%s",
+                task_id,
+            )
+
+            validated = StoryGenerationResult.model_validate(
+                internal_error_result()
+            )
+
+        result = validated.model_dump(
+            mode="json",
+            exclude_unset=True,
+        )
+
+        story = validated.story_payload
+
+        if story is not None:
+            print(
+                "[AUTO-STORY-V2] 劇本結果"
+                f"｜task_id={task_id}"
+                f"｜outcome={validated.outcome}"
+                f"｜節點數={len(story.nodes)}"
+                f"｜任務數="
+                f"{sum(len(node.tasks) for node in story.nodes)}"
+            )
+        else:
+            print(
+                "[AUTO-STORY-V2] 非劇本結果"
+                f"｜task_id={task_id}"
+                f"｜outcome={validated.outcome}"
+                f"｜reason_code={validated.reason_code}"
+            )
+
+        return result
+
+    submitted = job_queue.submit(
+        task_type="script_blueprint",
+        factory=execute_job,
+        task_id=task_id,
+    )
+
+    if isinstance(submitted, dict):
+        return {
+            **submitted,
+            "job_id": task_id,
+            "check_url": check_url,
+            "pipeline_version": "auto-story-v2",
+        }
+
+    return submitted
 
 
-@router.get("/api/admin/generate_script_blueprint_by_text/{job_id}")
-def api_get_blueprint_job(job_id: str):
-    with _JOBS_LOCK:
-        job = BLUEPRINT_JOBS.get(job_id)
-        job = dict(job) if job else None
-    if not job:
-        return JSONResponse(status_code=404, content={"status": "not_found", "job_id": job_id})
-    job.pop("updated_at", None)
-    return {"job_id": job_id, **job}
+
+@router.get(
+    "/api/admin/generate_script_blueprint_by_text/{job_id}",
+    summary="查詢劇本藍圖任務（相容舊路由）",
+)
+async def api_get_blueprint_job(job_id: str):
+    return job_queue.get(job_id)
 
 # ============================================================
-# 劇本任務生成 API (批次生成多份劇本與節點任務)
-# 欄位正規化與驗證已移到 services/llm_service.py 的 generate_batch_story_tasks
+# 劇本任務生成 API：批次故事排隊生成
+#
+# POST：驗證輸入、提交任務，回傳 HTTP 202
+# GET /api/jobs/{task_id}：查詢進度與結果
 # ============================================================
-@router.post("/stories/tasks/batch", response_model=StoryTaskResponse)
-def create_batch_story_tasks(payload: StoryTaskRequest):
-    """
-    後端一次送出多份劇本生成條件，AI SERVICE 依序生成後一次回傳。
-    """
-    try:
-        return generate_batch_story_tasks(payload.model_dump())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"劇本任務生成失敗: {str(e)}")
+@router.post(
+    "/stories/tasks",
+    summary="生成一套故事與每站全部指定任務",
+    status_code=202,
+)
+async def create_single_story_tasks(
+    payload: PublicStoryTaskRequest,
+):
+    task_id = uuid.uuid4().hex
+
+    request_data = payload.model_dump(
+        mode="json",
+    )
+
+    places = request_data["places"]
+
+    total_tasks = sum(
+        len(place["type_list"])
+        for place in places
+    )
+
+    print(
+        f"[任務 {task_id}] "
+        f"收到 {len(places)} 個景點，"
+        f"共 {total_tasks} 個指定任務"
+    )
+
+    for index, place in enumerate(places, start=1):
+        print(
+            f"[任務 {task_id}] "
+            f"第 {index} 站"
+            f"｜名稱：{place['p_name']}"
+            f"｜ID：{place['place_id']}"
+            f"｜題型："
+            f"{[item['type_id'] for item in place['type_list']]}"
+        )
+
+    async def execute_job():
+        job_queue.stage(
+            task_id,
+            "正在生成故事、章節與各站指定任務",
+        )
+
+        generated = await asyncio.to_thread(
+            generate_public_story_tasks,
+            request_data,
+        )
+
+        job_queue.stage(
+            task_id,
+            "正在驗證公開回應格式",
+        )
+
+        validated = PublicStoryTaskResponse.model_validate(
+            generated
+        )
+
+        result = validated.model_dump(
+            mode="json",
+            exclude_unset=True,
+        )
+
+        print(
+            f"[任務 {task_id}] "
+            f"完成 {len(result['nodes'])} 個節點，"
+            f"共 {sum(len(node['tasks']) for node in result['nodes'])} 個任務"
+        )
+
+        return result
+
+    return job_queue.submit(
+        task_type="stories_single",
+        factory=execute_job,
+        task_id=task_id,
+    )
